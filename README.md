@@ -26,26 +26,28 @@ We’re faster and just as accurate.
 <summary><strong>Full benchmark data</strong></summary>
 
 --- UNIFORM (10,000,000 samples) ---
-Native Math.cos/sin : 918.60 ms (10.89 M/s) checksum=2977.770125814061
-Custom (MSS precise=true) : 642.70 ms (15.56 M/s) checksum=2977.770125814480
+Native Math.cos/sin        : 918.60 ms   (10.89 M/s)   checksum=2977.770125814061
+Custom (MSS precise=true)  : 642.70 ms   (15.56 M/s)   checksum=2977.770125814480
 
 --- SMALL-DELTA (STEP=2π/512) (10,000,000 samples) ---
-Native Math.cos/sin : 923.90 ms (10.82 M/s) checksum=937.344599554581
-Custom (MSS precise=true) : 668.30 ms (14.96 M/s) checksum=937.344599554971
+Native Math.cos/sin        : 923.90 ms   (10.82 M/s)   checksum=937.344599554581
+Custom (MSS precise=true)  : 668.30 ms   (14.96 M/s)   checksum=937.344599554971
 
-RMS / maxAbs on 2,000,000 uniform samples → rms=2.577e-16 max=9.105e-16
-
+RMS / maxAbs on 2,000,000 uniform samples → rms=2.577e-16  max=9.105e-16
 Throughput gain: UNIFORM 1.43× (−30.0% time); SMALL-DELTA 1.38× (−27.7% time).
 
-=== Grouped run N=2,000,000 seed=1337 ===
-Z-only MSS(dir)=112.700 ms ns/op=56.350 Quat=186.700 ms ns/op=93.350 chkD=3.321e+5 chkQ=3.321e+5 maxDev=2.498e-15
-Y-only MSS(dir)=105.700 ms ns/op=52.850 Quat=190.100 ms ns/op=95.050 chkD=-6.659e+5 chkQ=-6.659e+5 maxDev=1.443e-15
-ZXY composite MSS(dir)=461.700 ms ns/op=230.850 Quat=567.700 ms ns/op=283.850 chkD=-430.608 chkQ=-430.608 maxDev=2.442e-15
+bash
+Copy
+Edit
+=== Grouped run  N=2,000,000  seed=1337 ===
+Z-only         MSS(dir)=112.700 ms  ns/op=56.350  Quat=186.700 ms  ns/op=93.350  chkD=3.321e+5  chkQ=3.321e+5  maxDev=2.498e-15
+Y-only         MSS(dir)=105.700 ms  ns/op=52.850  Quat=190.100 ms  ns/op=95.050  chkD=-6.659e+5 chkQ=-6.659e+5 maxDev=1.443e-15
+ZXY composite  MSS(dir)=461.700 ms  ns/op=230.850 Quat=567.700 ms  ns/op=283.850 chkD=-430.608 chkQ=-430.608 maxDev=2.442e-15
 --- Summary ---
-Z-only MSS(dir)=112.700 ms Quat=186.700 ms Δ=74.000 ms
-Y-only MSS(dir)=105.700 ms Quat=190.100 ms Δ=84.400 ms
-ZXY MSS(dir)=461.700 ms Quat=567.700 ms Δ=106.000 ms
-
+Z-only          MSS(dir)=112.700 ms  Quat=186.700 ms  Δ=74.000 ms
+Y-only          MSS(dir)=105.700 ms  Quat=190.100 ms  Δ=84.400 ms
+ZXY             MSS(dir)=461.700 ms  Quat=567.700 ms  Δ=106.000 ms
+Throughput gain: Z-only 1.66× (−39.6% time), Y-only 1.80× (−44.4%), ZXY 1.23× (−18.7%).
 Throughput gain: Z-only 1.66× (−39.6% time), Y-only 1.80× (−44.4%), ZXY 1.23× (−18.7%).
 
 </details>
