@@ -1,77 +1,119 @@
-Deterministic, phase-driven rotation.  
-**Drift-free. Matrix-free. Quaternion-free. Gimbal-free.**  
-Faster in trig and in rotations (see demos/benches).
+# Modular Symbolic Rotation Engine
 
-## What this is
-A minimal set of JS/Java/C++ demos and helpers for reliable 2D/3D rotation using:
-- Phase + LUT unit vectors (no runtime `Math.sin/Math.cos` in the hot path)
-- 2D complex multiply for planar rotation
-- Axis-angle (Rodrigues) for 3D rotation
-- Per-axis phase (no global reset coupling)
+This is a trigonometry-free, drift-free, rotation system built for high-performance applications.
 
-## Why it matters
-- **Drift-free:** deterministic phase stepping; no accumulation bleed.
-- **Matrix-free:** no persistent 3×3 stacks.
-- **Quaternion-free:** no quaternion math required for composition.
-- **Gimbal-free:** no Euler-angle degeneracy in operation.
-- **Fast:** beats native trig and quaternion apply in our benches.
+Faster than trig, matrix, and quaternion systems (see demos).
 
-## Accuracy & Speed
-We’re faster and just as accurate.
+---
 
-- **Unit vectors (cos/sin):** ~**1.4×** faster on average. Accuracy: RMS **2.577e−16**, max **9.105e−16** vs `Math.cos/sin`.
-- **3D rotations (vs quaternions):** up to **1.8×** faster. Accuracy: checksums match; max component deviation ≤ **2.50e−15**.
+## What This Is
+
+This project offers a new approach to rotation that eliminates common pain points found in traditional systems.
+
+By combining:
+
+- **Trig-free computation** via Symbolically Enriched Lookup Tables (SE-LUT)
+- **3D rotation** via phase-tracked axis–angle logic
+- **Deterministic control** via per-axis symbolic stepping
+
+…it delivers a **drift-free**, **gimbal-free**, **high-performance** rotation engine, faster and more predictable than trig, matrix, or quaternion systems.
+
+It contains a minimal set of JS/Java/C++ demos for:
+
+- **Trig-computation** via Symbolically Enriched Lookup Tables (SE-LUT)
+- **2D rotation** via complex multiply
+- **3D rotation** via axis-angle (Rodrigues) logic
+- **Per-axis phase control** (no global coupling)
+
+---
+
+## What Makes This Trig System Special?
+
+This project does **not** use a traditional trigonometric lookup table.
+
+Instead, it uses a **Symbolically Enriched Lookup Table (SE-LUT)**, where each anchor:
+
+- Encodes full phase and vector context (`θ`, `cosθ`, `sinθ`)
+- Supports symbolic Taylor expansion from that anchor
+- Enables phase-tracked, drift-free trigonometric evaluation
+
+As a result, even with just **128 anchors**, the trig system achieves:
+
+- **Machine-precision output** (RMS ≈ 2.6e-16)
+- **30%+ speedup** over native `Math.sin/cos`
+
+## Benchmarks: Trig vs Native, Rotation vs Quaternion
+
 <details>
-<summary><strong>Full benchmark data</strong></summary>
+<summary><strong>Click to view full results</strong></summary>
 
-#### Unit vectors
+### Trig System: SE-LUT vs Native `Math.cos/sin`
+
 ```text
---- UNIFORM (10,000,000 samples) ---
-Native Math.cos/sin        : 918.60 ms   (10.89 M/s)   checksum=2977.770125814061
-Custom (MSS precise=true)  : 642.70 ms   (15.56 M/s)   checksum=2977.770125814480
+--- UNIFORM (10M samples) ---
+Native Math.cos/sin        : 918.60 ms (10.89 M/s)
+Custom (MSS precise=true)  : 642.70 ms (15.56 M/s)
 
---- SMALL-DELTA (STEP=2π/512) (10,000,000 samples) ---
-Native Math.cos/sin        : 923.90 ms   (10.82 M/s)   checksum=937.344599554581
-Custom (MSS precise=true)  : 668.30 ms   (14.96 M/s)   checksum=937.344599554971
+--- SMALL-DELTA (STEP=2π/512) ---
+Native Math.cos/sin        : 923.90 ms
+Custom (MSS precise=true)  : 668.30 ms
 
-RMS / maxAbs on 2,000,000 uniform samples → rms=2.577e-16  max=9.105e-16
-Throughput gain: UNIFORM 1.43× (−30.0% time); SMALL-DELTA 1.38× (−27.7% time).
+RMS Error: 2.577e−16
+Max Error: 9.105e−16
+Speedup: ~1.4× faster
 
-3D rotations
-text
-Copy
-Edit
-=== Grouped run  N=2,000,000  seed=1337 ===
-Z-only         MSS(dir)=112.700 ms  ns/op=56.350  Quat=186.700 ms  ns/op=93.350  chkD=3.321e+5  chkQ=3.321e+5  maxDev=2.498e-15
-Y-only         MSS(dir)=105.700 ms  ns/op=52.850  Quat=190.100 ms  ns/op=95.050  chkD=-6.659e+5 chkQ=-6.659e+5 maxDev=1.443e-15
-ZXY composite  MSS(dir)=461.700 ms  ns/op=230.850 Quat=567.700 ms  ns/op=283.850 chkD=-430.608 chkQ=-430.608 maxDev=2.442e-15
---- Summary ---
-Z-only          MSS(dir)=112.700 ms  Quat=186.700 ms  Δ=74.000 ms
-Y-only          MSS(dir)=105.700 ms  Quat=190.100 ms  Δ=84.400 ms
-ZXY             MSS(dir)=461.700 ms  Quat=567.700 ms  Δ=106.000 ms
-Throughput gain: Z-only 1.66× (−39.6% time), Y-only 1.80× (−44.4%), ZXY 1.23× (−18.7%).
+=== 2,000,000 runs ===
+Z-only     : MSS = 112.7 ms  | Quat = 186.7 ms  → 1.66× faster
+Y-only     : MSS = 105.7 ms  | Quat = 190.1 ms  → 1.80× faster
+ZXY combo  : MSS = 461.7 ms  | Quat = 567.7 ms  → 1.23× faster
+
+Max component deviation: ≤ 2.50e−15
+Checksums match perfectly.
 ```
-</details> 
+</details>
+
+## Rotation System (Rodrigues + Phase)
+
+On top of the SE-LUT trigonometry layer, this project builds a full 3D rotation engine using:
+
+- **Rodrigues-style axis–angle rotation**
+- **Per-axis phase tracking** (no accumulation, no coupling)
+- **Pure unit vector operations** (no quats, no matrices)
+
+**Why Rodrigues?**
+
+Rodrigues rotation offers precise 3D vector rotation using only vector algebra, making it a perfect match for phase-tracked systems. By separating axis and angle as symbolic phase values, this method avoids the pitfalls of quaternions (like normalization) while remaining compact and intuitive.
+
+Key properties:
+
+- **Drift-free**: integer phase stepping, no loss over time  
+- **Matrix-free**: no persistent 3×3 state  
+- **Quaternion-free**: no need for 4D logic or normalization  
+- **Gimbal-free**: no Euler collapse or ambiguity  
+- **Fast**: beats quaternions and matrices in apply speed  
+
+---
 
 ## License & Patent Notice (Interim)
 
-**Status: Patent Pending**  
-This repository is currently for **non-commercial evaluation and research only**. No use is permitted in commercial products or services. A permanent license will be added later.
+This project is under **patent pending** status.
+
+This repository is provided for **non-commercial evaluation and research only**. A formal license will follow.
 
 ### Permitted Uses
-- View, clone, compile locally, and run the included demos.
-- Use is restricted to **non-commercial evaluation and research only**.
-- Attribution is required: `brennonreid/mss`.
+
+- Clone/view/run demos  
+- Non-commercial use only  
+- Attribution required: `brennonreid/mss`  
 
 ### Prohibited Uses
-- **Commercial use:** No incorporation into products or services.
-- **Redistribution or hosting:** No public hosting, sublicensing, or redistribution.
-- **Derivatives:** No creation or distribution of derivative works.
-- **ML/AI:** No inclusion in datasets or ML training.
 
-**Formal Notice:**  
-No express or implied rights are granted under any patents or patent applications related to Modular Symbolic System (MSS)/RSR or related work.
+- Commercial products or services  
+- Redistribution or sublicensing  
+- Derivative works  
+- Use in ML training or datasets  
 
-Provided “AS IS”, without warranties or conditions of any kind. Use at your own risk. This interim notice controls until a formal `LICENSE` file is added.
+---
 
+**AS IS** – No warranty.  
 © 2025 Brennon Reid. All rights reserved.
