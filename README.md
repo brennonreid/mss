@@ -21,10 +21,11 @@ We’re faster and just as accurate.
 
 - **Unit vectors (cos/sin):** ~**1.4×** faster on average. Accuracy: RMS **2.577e−16**, max **9.105e−16** vs `Math.cos/sin`.
 - **3D rotations (vs quaternions):** up to **1.8×** faster. Accuracy: checksums match; max component deviation ≤ **2.50e−15**.
-
 <details>
 <summary><strong>Full benchmark data</strong></summary>
 
+#### Unit vectors
+```text
 --- UNIFORM (10,000,000 samples) ---
 Native Math.cos/sin        : 918.60 ms   (10.89 M/s)   checksum=2977.770125814061
 Custom (MSS precise=true)  : 642.70 ms   (15.56 M/s)   checksum=2977.770125814480
@@ -36,7 +37,8 @@ Custom (MSS precise=true)  : 668.30 ms   (14.96 M/s)   checksum=937.344599554971
 RMS / maxAbs on 2,000,000 uniform samples → rms=2.577e-16  max=9.105e-16
 Throughput gain: UNIFORM 1.43× (−30.0% time); SMALL-DELTA 1.38× (−27.7% time).
 
-bash
+3D rotations
+text
 Copy
 Edit
 === Grouped run  N=2,000,000  seed=1337 ===
@@ -48,9 +50,8 @@ Z-only          MSS(dir)=112.700 ms  Quat=186.700 ms  Δ=74.000 ms
 Y-only          MSS(dir)=105.700 ms  Quat=190.100 ms  Δ=84.400 ms
 ZXY             MSS(dir)=461.700 ms  Quat=567.700 ms  Δ=106.000 ms
 Throughput gain: Z-only 1.66× (−39.6% time), Y-only 1.80× (−44.4%), ZXY 1.23× (−18.7%).
-Throughput gain: Z-only 1.66× (−39.6% time), Y-only 1.80× (−44.4%), ZXY 1.23× (−18.7%).
 
-</details>
+</details> ```
 
 ## License & Patent Notice (Interim)
 
