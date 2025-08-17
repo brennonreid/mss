@@ -50,8 +50,8 @@ Z-only          MSS(dir)=112.700 ms  Quat=186.700 ms  Δ=74.000 ms
 Y-only          MSS(dir)=105.700 ms  Quat=190.100 ms  Δ=84.400 ms
 ZXY             MSS(dir)=461.700 ms  Quat=567.700 ms  Δ=106.000 ms
 Throughput gain: Z-only 1.66× (−39.6% time), Y-only 1.80× (−44.4%), ZXY 1.23× (−18.7%).
-
-</details> ```
+```
+</details> 
 
 ## License & Patent Notice (Interim)
 
