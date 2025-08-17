@@ -42,6 +42,26 @@ As a result, even with just **128 anchors**, the trig system achieves:
 - **Machine-precision output** (RMS ≈ 2.6e-16)
 - **30%+ speedup** over native `Math.sin/cos`
 
+## Rotation System (Rodrigues + Phase)
+
+On top of the SE-LUT trigonometry layer, this project builds a full 3D rotation engine using:
+
+- **Rodrigues-style axis–angle rotation**
+- **Per-axis phase tracking** (no accumulation, no coupling)
+- **Pure unit vector operations** (no quats, no matrices)
+
+**Why Rodrigues?**
+
+Rodrigues rotation offers precise 3D vector rotation using only vector algebra, making it a perfect match for phase-tracked systems. By separating axis and angle as symbolic phase values, this method avoids the pitfalls of quaternions (like normalization) while remaining compact and intuitive.
+
+Key properties:
+
+- **Drift-free**: integer phase stepping, no loss over time  
+- **Matrix-free**: no persistent 3×3 state  
+- **Quaternion-free**: no need for 4D logic or normalization  
+- **Gimbal-free**: no Euler collapse or ambiguity  
+- **Fast**: beats quaternions and matrices in apply speed  
+
 ## Benchmarks: Trig vs Native, Rotation vs Quaternion
 
 <details>
@@ -71,28 +91,6 @@ Max component deviation: ≤ 2.50e−15
 Checksums match perfectly.
 ```
 </details>
-
-## Rotation System (Rodrigues + Phase)
-
-On top of the SE-LUT trigonometry layer, this project builds a full 3D rotation engine using:
-
-- **Rodrigues-style axis–angle rotation**
-- **Per-axis phase tracking** (no accumulation, no coupling)
-- **Pure unit vector operations** (no quats, no matrices)
-
-**Why Rodrigues?**
-
-Rodrigues rotation offers precise 3D vector rotation using only vector algebra, making it a perfect match for phase-tracked systems. By separating axis and angle as symbolic phase values, this method avoids the pitfalls of quaternions (like normalization) while remaining compact and intuitive.
-
-Key properties:
-
-- **Drift-free**: integer phase stepping, no loss over time  
-- **Matrix-free**: no persistent 3×3 state  
-- **Quaternion-free**: no need for 4D logic or normalization  
-- **Gimbal-free**: no Euler collapse or ambiguity  
-- **Fast**: beats quaternions and matrices in apply speed  
-
----
 
 ## License & Patent Notice (Interim)
 
