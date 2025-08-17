@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Two Octant Drift + Ortho Test (Angle2-only)</title>
+  <style>
+    body { margin: 0; background: #000; color:#fff; font-family: monospace; }
+    canvas { display: block; margin: auto; background: #111; }
+  </style>
+</head>
+<body>
+  <canvas id="canvas" width="600" height="600"></canvas>
+  <script src="customtrig.js"></script>
+  <script>
+    const canvas = document.getElementById("canvas");
+    const ctx = canvas.getContext("2d");
+    const cx = canvas.width / 2;
+    const cy = canvas.height / 2;
+    const radius = 200;
+    const dotRadius = 4;
+
+    let t = 0;
+    let lastTimestamp = null;
+    const speed = 0.45; // radians per second
+
+    function orthoMetrics(v, w) {
+      const dot = v.x * w.x + v.y * w.y;
+      const det = v.x * w.y - v.y * w.x; // ~ +1 for proper rotation
+      const lv = Math.hypot(v.x, v.y);
+      const lw = Math.hypot(w.x, w.y);
+      return { dot, det, lv, lw };
+    }
+
+    function drawPoint(x, y, r, color) {
+      ctx.beginPath();
+      ctx.arc(x, y, r, 0, Math.PI * 2);
+      ctx.fillStyle = color;
+      ctx.fill();
+    }
+
+    function draw(timestamp) {
+      if (!lastTimestamp) lastTimestamp = timestamp;
+      const deltaTime = (timestamp - lastTimestamp) / 1000;
+      lastTimestamp = timestamp;
+
+      t += speed * deltaTime;
+      if (t > Math.PI * 2) t -= Math.PI * 2;
+
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+      // Radial guide lines every 15°
+      ctx.strokeStyle = "#333";
+      ctx.fillStyle = "#888";
+      ctx.font = "10px monospace";
+	  
+      for (let deg = 0; deg < 360; deg += 15) {
+        const rad = deg * Math.PI / 180;
+        const x = cx + Math.cos(rad) * (radius + 30);
+        const y = cy + Math.sin(rad) * (radius + 30);
+        ctx.beginPath();
+        ctx.moveTo(cx, cy);
+        ctx.lineTo(x, y);
+        ctx.stroke();
+
+        const labelX = cx + Math.cos(rad) * (radius + 40);
+        const labelY = cy + Math.sin(rad) * (radius + 40);
+        ctx.fillText(deg.toString(), labelX - 10, labelY + 4);
+      }
+
+      // ---- YOUR rotator (Angle2-only) base + opposite ----
+      const base    = getUnitVectorFromAngle2(t,  true);
+      const offset  = getUnitVectorFromAngle2(-t, true);
+      const baseX   = cx + base.x   * radius;
+      const baseY   = cy + base.y   * radius;
+      const offsetX = cx + offset.x * (radius + 10);
+      const offsetY = cy + offset.y * (radius + 10);
+
+      // ---- Optional fast rings (Angle2-only) ----
+      const innerRadius = radius - 40;
+      const fastBase    = getUnitVectorFromAngle2( 2 * t,  true);
+      const fastOffset  = getUnitVectorFromAngle2(-2 * t,  true);
+      const fastBaseX   = cx + fastBase.x   * innerRadius;
+      const fastBaseY   = cy + fastBase.y   * innerRadius;
+      const fastOffsetX = cx + fastOffset.x * (innerRadius - 10);
+      const fastOffsetY = cy + fastOffset.y * (innerRadius - 10);
+
+      const phaseShift   = Math.PI;
+      const innerRadius2 = innerRadius - 20;
+      const fastBase2    = getUnitVectorFromAngle2( 2 * t + phaseShift, true);
+      const fastOffset2  = getUnitVectorFromAngle2(-2 * t + phaseShift, true);
+      const fastBase2X   = cx + fastBase2.x   * innerRadius2;
+      const fastBase2Y   = cy + fastBase2.y   * innerRadius2;
+      const fastOffset2X = cx + fastOffset2.x * (innerRadius2 - 10);
+      const fastOffset2Y = cy + fastOffset2.y * (innerRadius2 - 10);
+
+      // ---- Native trig refs (for drift lines) ----
+      const mathX  = cx + Math.cos(t)  * radius;
+      const mathY  = cy + Math.sin(t)  * radius;
+      const mathX2 = cx + Math.cos(-t) * (radius + 10);
+      const mathY2 = cy + Math.sin(-t) * (radius + 10);
+
+      // ---- NEW: Ortho pair for YOUR rotator (θ and θ + π/2) ----
+      const myOrtho  = getUnitVectorFromAngle2(t + Math.PI / 2, true);
+      const myOrthoX = cx + myOrtho.x * radius;
+      const myOrthoY = cy + myOrtho.y * radius;
+      const myMetrics = orthoMetrics(base, myOrtho);
+
+      // Compare to simple (-y, x) swap
+      const swapX = -base.y;
+      const swapY =  base.x;
+      const swapDiff = Math.hypot(myOrtho.x - swapX, myOrtho.y - swapY);
+
+      // ---- NEW: Ortho pair for TRIG (θ and θ + π/2) ----
+      const trigBase  = { x: Math.cos(t), y: Math.sin(t) };
+      const trigOrtho = { x: Math.cos(t + Math.PI / 2), y: Math.sin(t + Math.PI / 2) };
+      const trigOrthoX = cx + trigOrtho.x * radius;
+      const trigOrthoY = cy + trigOrtho.y * radius;
+      const trigMetrics = orthoMetrics(trigBase, trigOrtho);
+
+      // ---- Draw points ----
+      // Yours
+      drawPoint(baseX, baseY, dotRadius, "red");
+      drawPoint(offsetX, offsetY, dotRadius, "orange");
+      drawPoint(fastBaseX,  fastBaseY,  dotRadius, "magenta");
+      drawPoint(fastOffsetX, fastOffsetY, dotRadius, "lime");
+      drawPoint(fastBase2X, fastBase2Y, dotRadius, "#aa00ff");
+      drawPoint(fastOffset2X, fastOffset2Y, dotRadius, "#00ffff");
+
+      // Native trig base (blue) + opposite (cyan)
+      drawPoint(mathX,  mathY,  2, "blue");
+      drawPoint(mathX2, mathY2, 2, "cyan");
+
+      // Ortho points
+      drawPoint(myOrthoX,   myOrthoY,   3, "#ffee55"); // yours
+      drawPoint(trigOrthoX, trigOrthoY, 2, "#ffffff"); // trig
+
+      // Drift lines vs trig
+      ctx.beginPath();
+      ctx.moveTo(baseX, baseY);
+      ctx.lineTo(mathX, mathY);
+      ctx.strokeStyle = "lime";
+      ctx.stroke();
+
+      ctx.beginPath();
+      ctx.moveTo(offsetX, offsetY);
+      ctx.lineTo(mathX2, mathY2);
+      ctx.strokeStyle = "yellow";
+      ctx.stroke();
+
+      // Text
+      const drift1 = Math.hypot(baseX - mathX, baseY - mathY);
+      const drift2 = Math.hypot(offsetX - mathX2, offsetY - mathY2);
+
+      let yText = 20;
+      const line = (s) => { ctx.fillStyle = "#fff"; ctx.font = "14px monospace"; ctx.fillText(s, 10, yText); yText += 18; };
+
+      line("Drift A (base vs trig):   " + drift1.toFixed(22));
+      line("Drift B (offset vs trig): " + drift2.toFixed(22));
+      yText += 6;
+
+      line("[Yours]  ortho dot: " + myMetrics.dot.toExponential(18));
+      line("[Yours]  ortho det: " + (myMetrics.det).toFixed(18) + "  (err=" + Math.abs(1 - myMetrics.det).toExponential(6) + ")");
+      line("[Yours]  |v|-1:     " + (myMetrics.lv - 1).toExponential(18));
+      line("[Yours]  |w|-1:     " + (myMetrics.lw - 1).toExponential(18));
+      line("[Yours]  π/2 swap Δ: " + swapDiff.toExponential(18));
+      yText += 6;
+
+      line("[Trig]   ortho dot: " + trigMetrics.dot.toExponential(18));
+      line("[Trig]   ortho det: " + (trigMetrics.det).toFixed(18) + "  (err=" + Math.abs(1 - trigMetrics.det).toExponential(6) + ")");
+      line("[Trig]   |v|-1:     " + (trigMetrics.lv - 1).toExponential(18));
+      line("[Trig]   |w|-1:     " + (trigMetrics.lw - 1).toExponential(18));
+
+      requestAnimationFrame(draw);
+    }
+
+    requestAnimationFrame(draw);
+  </script>
+</body>
+</html>

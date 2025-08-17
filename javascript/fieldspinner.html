@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>MSS Rotations — Matrix-Free Demo</title>
+  <style>
+    :root { color-scheme: dark; }
+    html, body { margin:0; height:100%; background:#0b0f14; color:#e6edf3; font:14px/1.35 ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; }
+    #c { display:block; width:100vw; height:100vh; }
+    #hud { position:fixed; left:12px; top:12px; z-index:10; background:#0b0f14cc; border:1px solid #1f2630; border-radius:10px; padding:10px 12px; min-width: 320px; }
+    #hud h1 { margin:0 0 6px; font-size:14px; font-weight:600; color:#b7c5d3; }
+    #hud .row { display:flex; align-items:center; gap:8px; margin-top:6px; flex-wrap:wrap; }
+    #hud label { display:inline-flex; align-items:center; gap:6px; }
+    #hud input[type="range"] { width:160px; }
+    #hud small { color:#8ea3b8; }
+  </style>
+</head>
+<body>
+  <canvas id="c"></canvas>
+
+  <div id="hud">
+    <h1>MSS Rotations — Matrix-Free</h1>
+    <div class="row">
+      <label>ωx: <span id="wxv">0.8</span></label><input id="wx" type="range" min="-4" max="4" step="0.1" value="0.8" />
+      <label>ωy: <span id="wyv">1.1</span></label><input id="wy" type="range" min="-4" max="4" step="0.1" value="1.1" />
+      <label>ωz: <span id="wzv">0.6</span></label><input id="wz" type="range" min="-4" max="4" step="0.1" value="0.6" />
+    </div>
+    <div class="row">
+      <label>Speed× <span id="spd">1.0</span></label><input id="speed" type="range" min="0.1" max="3" step="0.1" value="1" />
+      <label><input id="wire" type="checkbox" checked> wireframe</label>
+      <label><input id="axes" type="checkbox" checked> draw axes</label>
+      <small>Using <code>customtrig.js</code> + <code>rotation_core.js</code></small>
+    </div>
+    <div class="row"><small>FPS: <span id="fps">–</span></small></div>
+  </div>
+
+  <!-- Your libs only -->
+  <script src="customtrig.js" defer></script>
+  <script src="rotation.js" defer></script>
+
+  <script>
+    // ===== Canvas setup =====
+    const canvas = document.getElementById('c');
+    const ctx = canvas.getContext('2d', { alpha:false, desynchronized:true });
+
+    const hud = {
+      wx: document.getElementById('wx'), wy: document.getElementById('wy'), wz: document.getElementById('wz'),
+      wxv: document.getElementById('wxv'), wyv: document.getElementById('wyv'), wzv: document.getElementById('wzv'),
+      speed: document.getElementById('speed'), spd: document.getElementById('spd'),
+      wire: document.getElementById('wire'), axes: document.getElementById('axes'),
+      fps: document.getElementById('fps')
+    };
+
+    function resize(){
+      const dpr = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
+      const w = Math.floor(window.innerWidth);
+      const h = Math.floor(window.innerHeight);
+      canvas.width = Math.floor(w * dpr);
+      canvas.height = Math.floor(h * dpr);
+      canvas.style.width = w + 'px';
+      canvas.style.height = h + 'px';
+      ctx.setTransform(dpr,0,0,dpr,0,0);
+    }
+    window.addEventListener('resize', resize);
+
+    // ===== Geometry =====
+    // Unit cube centered at origin
+    const V = [
+      [-1,-1,-1], [ 1,-1,-1], [ 1, 1,-1], [-1, 1,-1],
+      [-1,-1, 1], [ 1,-1, 1], [ 1, 1, 1], [-1, 1, 1]
+    ];
+    const E = [
+      [0,1],[1,2],[2,3],[3,0],
+      [4,5],[5,6],[6,7],[7,4],
+      [0,4],[1,5],[2,6],[3,7]
+    ];
+
+    // Axes (for gizmo & convenience)
+    const X = [1,0,0], Y = [0,1,0], Z = [0,0,1];
+
+    // ===== Camera / projection =====
+    let fov = 800; // larger → less perspective
+    let camZ = 5;
+
+    function project(p, w, h){
+      const z = p[2] + camZ;
+      const s = fov / (fov + z*100);
+      return [ w*0.5 + p[0]*s*80, h*0.5 - p[1]*s*80 ];
+    }
+
+    // ===== Animation state =====
+    let ax = 0, ay = 0, az = 0;     // phase angles
+    let lastT = performance.now();
+    let acc=0, frames=0, fps=0;
+
+        // ===== UI bindings =====
+    function bindRange(input, label){ input.addEventListener('input', ()=>{ label.textContent = parseFloat(input.value).toFixed(1); }); }
+    bindRange(hud.wx, hud.wxv); bindRange(hud.wy, hud.wyv); bindRange(hud.wz, hud.wzv);
+    hud.speed.addEventListener('input', ()=>{ hud.spd.textContent = parseFloat(hud.speed.value).toFixed(1); });
+
+    // ===== Main loop =====
+    function frame(t){
+      const dt = Math.min(0.05, (t - lastT) * 0.001) * parseFloat(hud.speed.value);
+      lastT = t;
+
+      // FPS
+      acc += dt; frames++;
+      if (acc >= 0.25){ fps = Math.round(frames/acc); frames=0; acc=0; hud.fps.textContent = String(fps); }
+
+      // Advance phases
+      ax = wrapTau(ax + parseFloat(hud.wx.value) * dt);
+      ay = wrapTau(ay + parseFloat(hud.wy.value) * dt);
+      az = wrapTau(az + parseFloat(hud.wz.value) * dt);
+
+      // Clear
+      const w = canvas.clientWidth, h = canvas.clientHeight;
+      ctx.fillStyle = '#0b0f14';
+      ctx.fillRect(0,0,w,h);
+      ctx.lineWidth = 1.25;
+
+      // Axes gizmo
+      if (hud.axes.checked){
+        const O = project([0,0,0], w, h);
+        const Xp = project([1.5,0,0], w, h);
+        const Yp = project([0,1.5,0], w, h);
+        const Zp = project([0,0,1.5], w, h);
+        ctx.strokeStyle = '#e27d7d'; ctx.beginPath(); ctx.moveTo(O[0],O[1]); ctx.lineTo(Xp[0],Xp[1]); ctx.stroke();
+        ctx.strokeStyle = '#7de2a8'; ctx.beginPath(); ctx.moveTo(O[0],O[1]); ctx.lineTo(Yp[0],Yp[1]); ctx.stroke();
+        ctx.strokeStyle = '#7db6e2'; ctx.beginPath(); ctx.moveTo(O[0],O[1]); ctx.lineTo(Zp[0],Zp[1]); ctx.stroke();
+      }
+
+      // Rotate each vertex: Z → X → Y (matches your demo order)
+      const P = new Array(V.length);
+      for (let i=0;i<V.length;i++){
+        let p = V[i];
+        p = rotateZ(az, p[0], p[1], p[2]);
+        p = rotateX(ax, p[0], p[1], p[2]);
+        p = rotateY(ay, p[0], p[1], p[2]);
+        P[i] = p;
+      }
+
+      // Draw cube
+      const wire = hud.wire.checked;
+      ctx.strokeStyle = wire ? '#c7d6e5' : '#90abc5';
+      ctx.fillStyle = '#41576d';
+
+      if (wire){
+        ctx.beginPath();
+        for (const [a,b] of E){
+          const A = project(P[a], w, h);
+          const B = project(P[b], w, h);
+          ctx.moveTo(A[0],A[1]); ctx.lineTo(B[0],B[1]);
+        }
+        ctx.stroke();
+      } else {
+        const F = [ [0,1,2,3],[4,5,6,7],[0,1,5,4],[2,3,7,6],[1,2,6,5],[0,3,7,4] ];
+        for (const f of F){
+          ctx.beginPath();
+          const A = project(P[f[0]], w, h); ctx.moveTo(A[0],A[1]);
+          for (let j=1;j<f.length;j++){ const Q = project(P[f[j]], w, h); ctx.lineTo(Q[0],Q[1]); }
+          ctx.closePath(); ctx.fill(); ctx.stroke();
+        }
+      }
+
+      requestAnimationFrame(frame);
+    }
+
+    // Go
+    resize();
+    requestAnimationFrame(frame);
+  </script>
+</body>
+</html>

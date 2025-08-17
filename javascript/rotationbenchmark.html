@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>RSR vs Quaternions — Side-by-Side Numerical Check</title>
+  <style>
+    html, body { margin:0; height:100%; background:#000; color:#fff; font-family:monospace; }
+    #stats { position:fixed; top:10px; left:10px; background:rgba(0,0,0,.6); padding:8px 12px; border-radius:8px; line-height:1.35; }
+    canvas { display:block; width:100vw; height:100vh; }
+    .mono { font-variant-numeric: tabular-nums; }
+  </style>
+</head>
+<body>
+  <div id="stats" class="mono">
+    phase tick: <span id="ph">0</span><br/>
+    Z-only   max: <span id="zmax">—</span>  rms: <span id="zrms">—</span><br/>
+    X-only   max: <span id="xmax">—</span>  rms: <span id="xrms">—</span><br/>
+    Y-only   max: <span id="ymax">—</span>  rms: <span id="yrms">—</span><br/>
+    Z–X–Y    max: <span id="cmax">—</span>  rms: <span id="crms">—</span>
+  </div>
+  <canvas id="cv"></canvas>
+
+  <!-- Order matters -->
+  <script src="customtrig.js"></script>   <!-- provides TAU, getUnitVectorFromAngle2 -->
+  <script src="rotation.js"></script>     <!-- your final file with rotate(), applyAxisRotateAxisAngle(), etc. -->
+
+  <script>
+    // ==== Renderer config (NO matrices; draw path uses your rotateAxisAngle; quats only for verification) ====
+    const canvas = document.getElementById('cv');
+    const ctx = canvas.getContext('2d');
+    const $ph   = document.getElementById('ph');
+    const $zmax = document.getElementById('zmax');
+    const $zrms = document.getElementById('zrms');
+    const $xmax = document.getElementById('xmax');
+    const $xrms = document.getElementById('xrms');
+    const $ymax = document.getElementById('ymax');
+    const $yrms = document.getElementById('yrms');
+    const $cmax = document.getElementById('cmax');
+    const $crms = document.getElementById('crms');
+
+    function resize(){
+      canvas.width = window.innerWidth;
+      canvas.height = window.innerHeight;
+    }
+    addEventListener('resize', resize); resize();
+
+    // One absolute phase φ (integer tick). Every cube uses EXACTLY φ (no extra offsets/multipliers).
+    let tick = 0;                  // integer
+    const TICKS_PER_REV = 720;     // wraps per revolution
+    const STEP_RAD = TAU / TICKS_PER_REV;  // from customtrig.js
+
+    // Cube geometry: unit cube vertices and edges
+    const SIGNS = [
+      [-1,-1,-1],[ 1,-1,-1],[ 1, 1,-1],[-1, 1,-1],
+      [-1,-1, 1],[ 1,-1, 1],[ 1, 1, 1],[-1, 1, 1]
+    ];
+    const EDGES = [
+      0,1, 1,2, 2,3, 3,0,
+      4,5, 5,6, 6,7, 7,4,
+      0,4, 1,5, 2,6, 3,7
+    ];
+
+    // Simple algebraic perspective (no trig anywhere)
+    const F = 520;       // focal-length-like scalar
+    const D = 6.0;       // camera depth offset; keep z + D > 0
+
+    function projectToScreen(x, y, z){
+      const denom = (z + D);
+      const sx = canvas.width * 0.5 + (x * F) / denom;
+      const sy = canvas.height * 0.5 - (y * F) / denom;
+      return [sx, sy];
+    }
+
+    // Draw cube with EXACTLY ONE axis rotation (uses applyAxisRotateAxisAngle from rotation.js)
+    function drawCubeAxisAligned(cx, cy, cz, S, axis, theta, color){
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 2;
+
+      const verts2d = new Array(SIGNS.length);
+      for (let i = 0; i < SIGNS.length; i++){
+        let x = SIGNS[i][0] * S;
+        let y = SIGNS[i][1] * S;
+        let z = SIGNS[i][2] * S;
+
+        [x, y, z] = applyAxisRotateAxisAngle(x, y, z, axis, theta);
+
+        x += cx; y += cy; z += cz;
+        verts2d[i] = projectToScreen(x, y, z);
+      }
+
+      ctx.beginPath();
+      for (let e = 0; e < EDGES.length; e += 2){
+        const a = verts2d[EDGES[e+0]];
+        const b = verts2d[EDGES[e+1]];
+        ctx.moveTo(a[0], a[1]);
+        ctx.lineTo(b[0], b[1]);
+      }
+      ctx.stroke();
+    }
+
+    // Draw cube using a prebuilt pose (rotate(yaw,pitch,roll))
+    function drawCubeWithPose(cx, cy, cz, S, pose, color){
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 2;
+
+      const verts2d = new Array(SIGNS.length);
+      for (let i = 0; i < SIGNS.length; i++){
+        let x = SIGNS[i][0] * S;
+        let y = SIGNS[i][1] * S;
+        let z = SIGNS[i][2] * S;
+
+        [x, y, z] = pose.apply(x, y, z);
+
+        x += cx; y += cy; z += cz;
+        verts2d[i] = projectToScreen(x, y, z);
+      }
+
+      ctx.beginPath();
+      for (let e = 0; e < EDGES.length; e += 2){
+        const a = verts2d[EDGES[e+0]];
+        const b = verts2d[EDGES[e+1]];
+        ctx.moveTo(a[0], a[1]);
+        ctx.lineTo(b[0], b[1]);
+      }
+      ctx.stroke();
+    }
+
+    // World layout
+    const S = 0.8;     // cube half-size in world units
+    const Zpos = 4.0;  // world z-depth
+
+    // Convert desired screen spacing to world offset (invert projection at z=Zpos)
+    function screenDeltaToWorld(dPixels){
+      const denom = (Zpos + D);
+      return dPixels * denom / F;
+    }
+
+    // ======================
+    // Quaternion utilities (verification path) — all trig via getUnitVectorFromAngle2
+    // ======================
+    function quatFromAxisAngle(axis, theta){
+      // q = [w, x, y, z] with w=cos(theta/2), v=axis * sin(theta/2)
+      const { x: c, y: s } = getUnitVectorFromAngle2(theta * 0.5, false);
+      return [c, axis[0]*s, axis[1]*s, axis[2]*s];
+    }
+    function quatConj(q){ return [q[0], -q[1], -q[2], -q[3]]; }
+    function quatMul(a, b){
+      const aw=a[0], ax=a[1], ay=a[2], az=a[3];
+      const bw=b[0], bx=b[1], by=b[2], bz=b[3];
+      return [
+        aw*bw - ax*bx - ay*by - az*bz,
+        aw*bx + ax*bw + ay*bz - az*by,
+        aw*by - ax*bz + ay*bw + az*bx,
+        aw*bz + ax*by - ay*bx + az*bw
+      ];
+    }
+    function quatRotateVec(q, v){
+      // v' = q * (0,v) * q*
+      const qv = [0, v[0], v[1], v[2]];
+      const t  = quatMul(q, qv);
+      const r  = quatMul(t, quatConj(q));
+      return [r[1], r[2], r[3]];
+    }
+    // Compose Z–X–Y chain in the same application order used in your pose
+    function quatFromZXY(alpha, beta, gamma){
+      const qz = quatFromAxisAngle([0,0,1], alpha);
+      const qx = quatFromAxisAngle([1,0,0], beta);
+      const qy = quatFromAxisAngle([0,1,0], gamma);
+      // Apply Z then X then Y ⇒ q_total = qy * qx * qz
+      return quatMul(qy, quatMul(qx, qz));
+    }
+
+    function maxRmsErrForAxis(axis, theta){
+      let maxAbs = 0;
+      let ss = 0;
+      let n = 0;
+      const k = (axis === 'z') ? [0,0,1] : (axis === 'x') ? [1,0,0] : [0,1,0];
+      const q = quatFromAxisAngle(k, theta);
+      for (let i=0;i<SIGNS.length;i++){
+        const p = [SIGNS[i][0]*S, SIGNS[i][1]*S, SIGNS[i][2]*S];
+        let rA = applyAxisRotateAxisAngle(p[0], p[1], p[2], axis, theta); // your path
+        let rQ = quatRotateVec(q, p);                                    // quat path
+        const dx = rA[0]-rQ[0], dy = rA[1]-rQ[1], dz = rA[2]-rQ[2];
+        const m = Math.max(Math.abs(dx), Math.abs(dy), Math.abs(dz));
+        if (m > maxAbs) maxAbs = m;
+        ss += dx*dx + dy*dy + dz*dz;
+        n++;
+      }
+      const rms = Math.sqrt(ss / (3*n));
+      return {maxAbs, rms};
+    }
+
+    function maxRmsErrZXY(alpha, beta, gamma){
+      const q = quatFromZXY(alpha, beta, gamma);
+      let maxAbs = 0;
+      let ss = 0;
+      let n = 0;
+      for (let i=0;i<SIGNS.length;i++){
+        const p = [SIGNS[i][0]*S, SIGNS[i][1]*S, SIGNS[i][2]*S];
+        // your chain: Z then X then Y
+        let a = applyAxisRotateAxisAngle(p[0], p[1], p[2], 'z', alpha);
+        a = applyAxisRotateAxisAngle(a[0], a[1], a[2], 'x', beta);
+        a = applyAxisRotateAxisAngle(a[0], a[1], a[2], 'y', gamma);
+        const b = quatRotateVec(q, p);
+        const dx = a[0]-b[0], dy = a[1]-b[1], dz = a[2]-b[2];
+        const m = Math.max(Math.abs(dx), Math.abs(dy), Math.abs(dz));
+        if (m > maxAbs) maxAbs = m;
+        ss += dx*dx + dy*dy + dz*dz;
+        n++;
+      }
+      const rms = Math.sqrt(ss / (3*n));
+      return {maxAbs, rms};
+    }
+
+    // === helpers for formatting ===
+    function fmt(v){
+      if (!isFinite(v)) return 'NaN';
+      const a = Math.abs(v);
+      if (a === 0) return '0';
+      if (a >= 1e-3 && a < 1e3) return v.toFixed(12).replace(/0+$/,'').replace(/\.$/,'');
+      return v.toExponential(3);
+    }
+
+    function frame(){
+      tick = (tick + 1) % TICKS_PER_REV;
+      const phi = tick * STEP_RAD;
+      $ph.textContent = tick.toString();
+
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+      const spacingXpx = canvas.width / 4;
+      const spacingYpx = canvas.height / 4;
+      const wdx = screenDeltaToWorld(spacingXpx);
+      const wdy = screenDeltaToWorld(spacingYpx);
+
+      // Three originals across the middle row (each with exactly one axis)
+      const cx1 = -wdx, cx2 = 0, cx3 = wdx;
+      const cyMid = 0;
+
+      drawCubeAxisAligned(cx1, cyMid, Zpos, S,     'z', phi, '#00ffff'); // XY plane
+      drawCubeAxisAligned(cx2, cyMid, Zpos, S,     'x', phi, '#ff66ff'); // YZ plane
+      drawCubeAxisAligned(cx3, cyMid, Zpos, S,     'y', phi, '#ffff66'); // ZX plane
+
+      // 4th cube — centered horizontally, BELOW the middle row, slightly larger
+      const cx4 = 0;
+      const cy4 = -wdy;           // lower on screen
+      const S4  = S * 1.25;       // slightly larger
+
+      // === Pose from yaw/pitch/roll (Z→X→Y) with internal β-flip
+      const pose = rotate(/*yaw*/phi, /*pitch*/phi, /*roll*/phi);
+      drawCubeWithPose(cx4, cy4, Zpos, S4, pose, '#ffffff');
+
+      // === Numerical comparison (your path vs quaternions) ===
+      const ez = maxRmsErrForAxis('z', phi);
+      const ex = maxRmsErrForAxis('x', phi);
+      const ey = maxRmsErrForAxis('y', phi);
+
+      // Use the canonicalized angles from the pose for the chain comparison
+      const { yaw: alpha, pitch: beta, roll: gamma } = pose.angles();
+      const ec = maxRmsErrZXY(alpha, beta, gamma);
+
+      $zmax.textContent = fmt(ez.maxAbs); $zrms.textContent = fmt(ez.rms);
+      $xmax.textContent = fmt(ex.maxAbs); $xrms.textContent = fmt(ex.rms);
+      $ymax.textContent = fmt(ey.maxAbs); $yrms.textContent = fmt(ey.rms);
+      $cmax.textContent = fmt(ec.maxAbs); $crms.textContent = fmt(ec.rms);
+
+      requestAnimationFrame(frame);
+    }
+
+    requestAnimationFrame(frame);
+  </script>
+</body>
+</html>
