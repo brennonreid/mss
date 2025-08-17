@@ -1,11 +1,9 @@
-# MSS — Modular Symbolic System
-
 Deterministic, phase-driven rotation.
 **Drift-free. Matrix-free. Quaternion-free. Gimbal-free.**
 Faster in trig and in rotations (see demos/benches).
 
 ## What this is
-A minimal set of JS demos and helpers for reliable 2D/3D rotation using:
+A minimal set of JS/Java/C++ demos and helpers for reliable 2D/3D rotation using:
 - Phase + LUT unit vectors (no runtime `Math.sin/Math.cos` in the hot path)
 - 2D complex multiply for planar rotation
 - Axis-angle (Rodrigues) for 3D rotation
