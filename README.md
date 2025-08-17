@@ -1,4 +1,4 @@
-# Modular Symbolic Rotation Engine
+# Modular Symbolic System 
 
 This is a trigonometry-free, drift-free, rotation system built for high-performance applications.
 
@@ -42,6 +42,8 @@ As a result, even with just **128 anchors**, the trig system achieves:
 - **Machine-precision output** (RMS ≈ 2.6e-16)
 - **30%+ speedup** over native `Math.sin/cos`
 
+---
+
 ## Rotation System (Rodrigues + Phase)
 
 On top of the SE-LUT trigonometry layer, this project builds a full 3D rotation engine using:
@@ -61,6 +63,8 @@ Key properties:
 - **Quaternion-free**: no need for 4D logic or normalization  
 - **Gimbal-free**: no Euler collapse or ambiguity  
 - **Fast**: beats quaternions and matrices in apply speed  
+
+---
 
 ## Benchmarks: Trig vs Native, Rotation vs Quaternion
 
@@ -91,6 +95,8 @@ Max component deviation: ≤ 2.50e−15
 Checksums match perfectly.
 ```
 </details>
+
+---
 
 ## License & Patent Notice (Interim)
 
