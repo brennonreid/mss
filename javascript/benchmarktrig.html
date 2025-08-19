@@ -30,12 +30,10 @@
 (() => {
   'use strict';
 
-  // ===== deps =====
-  if (typeof TAU === 'undefined' || typeof getUnitVectorFromAngle2 !== 'function') {
-    throw new Error('customtrig.js must define TAU and getUnitVectorFromAngle2(theta, precise).');
+  if (typeof TAU === 'undefined' || typeof getUnitVectorFromAngle2 !== 'function' || typeof getCustomSin !== 'function' || typeof getCustomCos !== 'function') {
+    throw new Error('customtrig.js must define TAU, getUnitVectorFromAngle2, getCustomSin, and getCustomCos.');
   }
 
-  // ===== util =====
   const out = document.getElementById('out');
   const fmt = (n, d=2) => Number.isFinite(n) ? n.toFixed(d) : String(n);
   const now = () => (typeof performance !== 'undefined' ? performance.now() : Date.now());
@@ -48,7 +46,6 @@
     return () => ((s = (1664525*s + 1013904223)>>>0) / 0x100000000);
   }
 
-  // ===== angle generators =====
   function genAnglesUniform(N, seed=12345) {
     const rnd = LCG(seed);
     const arr = new Float64Array(N);
@@ -56,7 +53,6 @@
     return arr;
   }
 
-  // simulate nearest-anchor use: θ = k*STEP + ε, with |ε| ≤ 0.5*STEP
   function genAnglesSmallDelta(N, anchorsFull=128, seed=67890) {
     const STEP = TAU / anchorsFull;
     const EPS  = STEP * 0.49;
@@ -70,11 +66,15 @@
     return arr;
   }
 
-  // ===== reference & candidate =====
   function refUnit(theta) { return { x: Math.cos(theta), y: Math.sin(theta) }; }
   function mssUnit(theta, precise) { return getUnitVectorFromAngle2(theta, precise); }
+  function singletonUnit(theta, precise) {
+    return {
+      x: getCustomCos(theta, precise),
+      y: getCustomSin(theta, precise)
+    };
+  }
 
-  // ===== loop overhead calibration =====
   function measureLoopOverhead(angles) {
     let sx=0, sy=0;
     const t0 = now();
@@ -84,7 +84,6 @@
     return t1 - t0;
   }
 
-  // ===== benchmark helpers =====
   function bench(fn, angles, precise) {
     let sumx=0, sumy=0;
     const t0 = now();
@@ -110,33 +109,33 @@
     return { maxAbs, rms };
   }
 
-  // ===== run one scenario =====
   function runScenario(label, angles, precise) {
     const N = angles.length;
 
-    // JIT warmup (small slice)
     bench((th)=>refUnit(th), angles.subarray(0, 200_000), precise);
     bench((th)=>mssUnit(th, precise), angles.subarray(0, 200_000), precise);
+    bench((th)=>singletonUnit(th, precise), angles.subarray(0, 200_000), precise);
 
     const loopMs = measureLoopOverhead(angles);
 
-    const bRef = bench((th)=>refUnit(th), angles, precise);
-    const bMss = bench((th)=>mssUnit(th, precise), angles, precise);
+    const bRef = bench(refUnit, angles, precise);
+    const bMss = bench(mssUnit, angles, precise);
+    const bSinCos = bench(singletonUnit, angles, precise);
 
     const refMs = bRef.ms - loopMs;
     const mssMs = bMss.ms - loopMs;
+    const sincosMs = bSinCos.ms - loopMs;
 
     const refThrough = N / (refMs/1000);
     const mssThrough = N / (mssMs/1000);
+    const sincosThrough = N / (sincosMs/1000);
 
     log(`--- ${label} (${N.toLocaleString()} samples) ---`);
-    log(`Native Math.cos/sin  : ${fmt(refMs)} ms   (${fmt(refThrough/1e6)} M/s)   checksum=${bRef.checksum.toFixed(12)}`);
-    log(`Custom (MSS precise=${precise}) : ${fmt(mssMs)} ms   (${fmt(mssThrough/1e6)} M/s)   checksum=${bMss.checksum.toFixed(12)}\n`);
-
-    return { refMs, mssMs };
+    log(`Native Math.cos/sin       : ${fmt(refMs)} ms   (${fmt(refThrough/1e6)} M/s)   checksum=${bRef.checksum.toFixed(12)}`);
+    log(`Custom (MSS precise=${precise})   : ${fmt(mssMs)} ms   (${fmt(mssThrough/1e6)} M/s)   checksum=${bMss.checksum.toFixed(12)}`);
+    log(`Custom SIN/COS (singleton) : ${fmt(sincosMs)} ms   (${fmt(sincosThrough/1e6)} M/s)   checksum=${bSinCos.checksum.toFixed(12)}\n`);
   }
 
-  // ===== accuracy report (like your earlier printout) =====
   function accuracyReport(precise) {
     const angles = [0.575, 1.111, 2.789, 3.333, 4.444, 5.555].map(a => ((a%TAU)+TAU)%TAU);
     log(`--- ACCURACY TEST vs Math.cos/sin${(typeof NUM_ANCHORS_QUADRANT!=='undefined')?` (NUM_ANCHORS_QUADRANT=${NUM_ANCHORS_QUADRANT})`:''} ---`);
@@ -144,46 +143,37 @@
     for (const a of angles){
       const r = refUnit(a);
       const t = mssUnit(a, precise);
-      const err = Math.hypot(t.x - r.x, t.y - r.y);
+      const s = singletonUnit(a, precise);
+      const errMss = Math.hypot(t.x - r.x, t.y - r.y);
+      const errSinCos = Math.hypot(s.x - r.x, s.y - r.y);
       log(`angle=${a.toFixed(3)}`);
-      log(`  Native   cos=${exp(r.x)}  sin=${exp(r.y)}`);
-      log(`  Custom   cos=${exp(t.x)}  sin=${exp(t.y)}`);
-      log(`  |error|  = ${err.toExponential(2)}\n`);
+      log(`  Native    cos=${exp(r.x)}  sin=${exp(r.y)}`);
+      log(`  MSS       cos=${exp(t.x)}  sin=${exp(t.y)}   |error|=${errMss.toExponential(2)}`);
+      log(`  Singleton cos=${exp(s.x)}  sin=${exp(s.y)}   |error|=${errSinCos.toExponential(2)}\n`);
     }
   }
 
-  // ===== orchestrate run =====
   async function runAll() {
     clear();
     const N = parseInt(document.getElementById('n').value, 10) || 1_000_000;
     const M = parseInt(document.getElementById('m').value, 10) || 2_000_000;
     const precise = document.getElementById('prec').checked;
-
-    // infer anchorsFull if your trig exposes it; else default 128
     const anchorsFull = (typeof NUM_ANCHORS_QUADRANT !== 'undefined') ? (4 * NUM_ANCHORS_QUADRANT) : 128;
 
-    // speed: uniform
-    const A_uniform = genAnglesUniform(N);
-    runScenario('UNIFORM', A_uniform, precise);
+    runScenario('UNIFORM', genAnglesUniform(N), precise);
+    runScenario(`SMALL-DELTA (STEP=2π/${anchorsFull})`, genAnglesSmallDelta(N, anchorsFull), precise);
 
-    // speed: small-delta (nearest-anchor profile)
-    const A_small = genAnglesSmallDelta(N, anchorsFull);
-    runScenario(`SMALL-DELTA (STEP=2π/${anchorsFull})`, A_small, precise);
-
-    // accuracy (RMS + maxAbs on a subset)
     const sub = genAnglesUniform(Math.min(M, N), 9999);
     const acc = accuracyStats(refUnit, mssUnit, sub, precise);
     log(`RMS / maxAbs on ${sub.length.toLocaleString()} uniform samples → rms=${acc.rms.toExponential(3)}  max=${acc.maxAbs.toExponential(3)}\n`);
 
-    // print a few specific angles like your classic report
     accuracyReport(precise);
   }
 
   document.getElementById('run').addEventListener('click', runAll);
-
-  // auto-run once on load
   runAll();
 })();
 </script>
+
 </body>
 </html>

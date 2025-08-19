@@ -79,14 +79,10 @@ void getUnitVectorFromAngle(float angleRadians, float& x, float& y, bool precise
 
     // Normalize only if needed (fast path if already [0,TAU))
     float relativeAngle = angleRadians;
-    if (relativeAngle < 0.0f || relativeAngle >= TAU) {
-        relativeAngle = fmodf(relativeAngle, TAU);
-        if (relativeAngle < 0.0f) relativeAngle += TAU;
-    }
 
     // Fast index (truncate via multiply by inverse step)
-    int zoneIndex = int(relativeAngle * INV_DEG_STEP_FULL);
-    if (zoneIndex >= NUM_ANCHORS_FULL) zoneIndex -= NUM_ANCHORS_FULL;
+    int zoneIndex = int(relativeAngle * INV_DEG_STEP_FULL) | 0;
+    //if (zoneIndex >= NUM_ANCHORS_FULL) zoneIndex -= NUM_ANCHORS_FULL;
 
     const Anchor& anchor = fullCircleAnchors[zoneIndex];
 
