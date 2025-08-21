@@ -74,6 +74,8 @@ Key properties:
 ### Trig System: SE-LUT vs Native `Math.cos/sin`
 
 ```text
+Javascript Benchmarks:
+
 --- UNIFORM (10M samples) ---
 Native Math.cos/sin        : 918.60 ms (10.89 M/s)
 Custom (MSS precise=true)  : 642.70 ms (15.56 M/s)
