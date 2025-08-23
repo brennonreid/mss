@@ -69,15 +69,14 @@ void setupTaylorTrig() {
     }
 }
 
-static constexpr float R1_2   = 1.0f / 2.0f;
-static constexpr float R1_6   = 1.0f / 6.0f;
-static constexpr float R1_24  = 1.0f / 24.0f;
-static constexpr float R1_120 = 1.0f / 120.0f;
-
 // Hot path (float)
 void getUnitVectorFromAngle(float angleRadians, float& x, float& y, bool precise) {
     // Taylor coeffs
-    
+    static constexpr float R1_2   = 1.0f / 2.0f;
+    static constexpr float R1_6   = 1.0f / 6.0f;
+    static constexpr float R1_24  = 1.0f / 24.0f;
+    static constexpr float R1_120 = 1.0f / 120.0f;
+
     // Normalize only if needed (fast path if already [0,TAU))
     float relativeAngle = angleRadians;
 
