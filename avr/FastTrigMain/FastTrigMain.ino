@@ -1,4 +1,4 @@
-#include "TaylorTrig.h"
+#include "btrig.h"
 #include <stdint.h>
 #include <math.h>
 
@@ -11,125 +11,268 @@ static inline uint64_t splitmix64(uint64_t &x) {
 }
 
 // Uniform [0,1)
-static inline double u01(uint64_t &state) {
-    // Take top 53 bits -> double in [0,1)
-    return ( (splitmix64(state) >> 11) * (1.0 / (1ULL << 53)) );
+static inline float u01(uint64_t &state) {
+    return (float)((splitmix64(state) >> 41) * (1.0f / (1ULL << 23)));
 }
 
 // ---------------- Config ----------------
-const uint32_t numSamples = 10000;           // set as high as you like
-constexpr double TAU = 6.2831853071795864769;
+const uint32_t numSamples = 10000;
+constexpr float TAU = 6.2831853071795864769f;
+constexpr float ONE_OVER_TAU = 1.0f / TAU;
+const uint64_t SEED = 0xCAFEBABEDEADBEEFULL;
 
-// Fixed seeds so both passes see identical angles
-const uint64_t SEED_BASE  = 0xCAFEBABEDEADBEEFULL;
-const uint64_t SEED_PRINT = 0x123456789ABCDEF0ULL;  // for the 10 sample prints
+// Volatile sink to prevent compiler optimizations
+volatile float sink = 0.0f;
+
+// Helper to print benchmark results
+void print_result(const char* name, unsigned long time_us, float checksum) {
+    Serial.print(name);
+    Serial.print(" : ");
+    Serial.print(time_us);
+    Serial.print(" us    (sink=");
+    Serial.print(checksum, 8);
+    Serial.println(")");
+}
 
 void setup() {
     Serial.begin(115200);
     while (!Serial) {}
-
-    Serial.println("Initializing TaylorTrig lookup tables...");
-    TaylorTrig::setupTaylorTrig();
-    Serial.println("Initialization complete.");
+    Serial.println("btrig:: lookup tables self-initialize...");
+    delay(2000);
+    Serial.println("\n--- TRIG SPEED TEST ---\n");
 }
 
 void loop() {
-    bool precise = false;
+    uint64_t seed = SEED;
 
-    float  x_approx, y_approx;   // CHANGED: was double
-    double x_native, y_native;
+    // Bench: sin/cos pair
+    Serial.println("--- sin/cos pairs ---");
+    unsigned long start_time, end_time;
+    float c, s;
 
-    volatile double customChecksum = 0.0;
-    volatile double nativeChecksum = 0.0;
-
-    // ========== SPEED TEST ==========
-    // Custom TaylorTrig Benchmark
-    uint64_t seed = SEED_BASE; // reset seed so both runs see same angles
-    unsigned long startCustom = micros();
-    for (uint32_t i = 0; i < numSamples; i++) {
-        double angle = u01(seed) * TAU;
-        TaylorTrig::getUnitVectorFromAngle((float)angle, x_approx, y_approx, precise); // cast angle to float
-        customChecksum += (double)x_approx + (double)y_approx; // CHANGED: cast to double for checksum
+    // std::sin/cos pair
+    seed = SEED;
+    sink = 0.0f;
+    start_time = micros();
+    for (uint32_t i = 0; i < numSamples; ++i) {
+        float angle = u01(seed) * TAU;
+        c = cos(angle);
+        s = sin(angle);
+        sink += c + s;
     }
-    unsigned long endCustom = micros();
-    unsigned long timeCustom = endCustom - startCustom;
+    end_time = micros();
+    print_result("std::sin/cos pair", end_time - start_time, sink);
 
-    // Native Math.h Benchmark
-    seed = SEED_BASE; // replay same angles
-    unsigned long startNative = micros();
-    for (uint32_t i = 0; i < numSamples; i++) {
-        double angle = u01(seed) * TAU;
-        x_native = cos(angle);
-        y_native = sin(angle);
-        nativeChecksum += x_native + y_native;
+    // btrig::sincos fast
+    seed = SEED;
+    sink = 0.0f;
+    start_time = micros();
+    for (uint32_t i = 0; i < numSamples; ++i) {
+        float angle = u01(seed) * TAU;
+        btrig::sincos(angle, false, c, s);
+        sink += c + s;
     }
-    unsigned long endNative = micros();
-    unsigned long timeNative = endNative - startNative;
-
-    // Print Results (Speed)
-    Serial.println("--- SPEED TEST ---");
-    Serial.print("Total Calculations: ");
-    Serial.println((unsigned long)numSamples);
-    Serial.print("Custom TaylorTrig time: ");
-    Serial.print(timeCustom);
-    Serial.println(" microseconds");
-    Serial.print("Native Math.h time:     ");
-    Serial.print(timeNative);
-    Serial.println(" microseconds");
-    Serial.print("Custom Checksum: ");
-    Serial.println(customChecksum, 12);
-    Serial.print("Approx Checksum: ");
-    Serial.println(nativeChecksum, 12);
+    end_time = micros();
+    print_result("btrig::sincos fast", end_time - start_time, sink);
     Serial.println();
 
-    // ========== ACCURACY TEST ==========
-    // Reset checksums so this section reflects only the accuracy pass
-    customChecksum = 0.0;
-    nativeChecksum = 0.0;
+    // Bench: singletons
+    Serial.println("--- singletons ---");
+    float val;
 
-    seed = SEED_BASE; // replay again for accuracy totals
-    for (uint32_t i = 0; i < numSamples; i++) {
-        double angle = u01(seed) * TAU;
-
-        TaylorTrig::getUnitVectorFromAngle((float)angle, x_approx, y_approx, precise); // cast angle
-        x_native = cos(angle);
-        y_native = sin(angle);
-
-        customChecksum += (double)x_approx + (double)y_approx; // cast to double
-        nativeChecksum += x_native + y_native;
+    // std::sin only
+    seed = SEED;
+    sink = 0.0f;
+    start_time = micros();
+    for (uint32_t i = 0; i < numSamples; ++i) {
+        float angle = u01(seed) * TAU;
+        val = sin(angle);
+        sink += val;
     }
+    end_time = micros();
+    print_result("std::sin only", end_time - start_time, sink);
 
-    Serial.println("--- ACCURACY TEST ---");
-    Serial.print("Total Calculations: ");
-    Serial.println((unsigned long)numSamples);
-    Serial.print("Custom Checksum: ");
-    Serial.println(customChecksum, 12);
-    Serial.print("Approx Checksum: ");
-    Serial.println(nativeChecksum, 12);
+    // btrig::sin fast
+    seed = SEED;
+    sink = 0.0f;
+    start_time = micros();
+    for (uint32_t i = 0; i < numSamples; ++i) {
+        float angle = u01(seed) * TAU;
+        btrig::sin(angle, false, val);
+        sink += val;
+    }
+    end_time = micros();
+    print_result("btrig::sin fast", end_time - start_time, sink);
     Serial.println();
 
-    // Print 10 sample comparisons (deterministic, separate seed)
-    uint64_t printSeed = SEED_PRINT;
-    for (int i = 0; i < 10; i++) {
-        double angle = u01(printSeed) * TAU;
-
-        TaylorTrig::getUnitVectorFromAngle((float)angle, x_approx, y_approx, precise); // cast angle
-        x_native = cos(angle);
-        y_native = sin(angle);
-
-        Serial.print("Angle: ");
-        Serial.print(angle, 6);
-        Serial.print(" | Custom (x, y): (");
-        Serial.print((double)x_approx, 12); // CHANGED: cast for consistent print
-        Serial.print(", ");
-        Serial.print((double)y_approx, 12); // CHANGED: cast for consistent print
-        Serial.print(") | Approx (x, y): (");
-        Serial.print(x_native, 12);
-        Serial.print(", ");
-        Serial.print(y_native, 12);
-        Serial.println(")");
+    // std::cos only
+    seed = SEED;
+    sink = 0.0f;
+    start_time = micros();
+    for (uint32_t i = 0; i < numSamples; ++i) {
+        float angle = u01(seed) * TAU;
+        val = cos(angle);
+        sink += val;
     }
+    end_time = micros();
+    print_result("std::cos only", end_time - start_time, sink);
+
+    // btrig::cos fast
+    seed = SEED;
+    sink = 0.0f;
+    start_time = micros();
+    for (uint32_t i = 0; i < numSamples; ++i) {
+        float angle = u01(seed) * TAU;
+        btrig::cos(angle, false, val);
+        sink += val;
+    }
+    end_time = micros();
+    print_result("btrig::cos fast", end_time - start_time, sink);
+    Serial.println();
+    
+    // Bench: tan
+    Serial.println("--- tangents ---");
+
+    // std::tan
+    seed = SEED;
+    sink = 0.0f;
+    start_time = micros();
+    for (uint32_t i = 0; i < numSamples; ++i) {
+        float angle = u01(seed) * TAU;
+        val = tan(angle);
+        sink += val;
+    }
+    end_time = micros();
+    print_result("std::tan", end_time - start_time, sink);
+
+    // btrig::tan
+    seed = SEED;
+    sink = 0.0f;
+    start_time = micros();
+    for (uint32_t i = 0; i < numSamples; ++i) {
+        float angle = u01(seed) * TAU;
+        val = btrig::tan(angle);
+        sink += val;
+    }
+    end_time = micros();
+    print_result("btrig::tan", end_time - start_time, sink);
     Serial.println();
 
+    // Bench: atan2
+    Serial.println("--- atan2 ---");
+    float y, x;
+
+    // std::atan2
+    seed = SEED;
+    sink = 0.0f;
+    start_time = micros();
+    for (uint32_t i = 0; i < numSamples; ++i) {
+        y = u01(seed) * 2.0f - 1.0f;
+        x = u01(seed) * 2.0f - 1.0f;
+        val = atan2(y, x);
+        sink += val;
+    }
+    end_time = micros();
+    print_result("std::atan2", end_time - start_time, sink);
+
+    // btrig::atan2
+    seed = SEED;
+    sink = 0.0f;
+    start_time = micros();
+    for (uint32_t i = 0; i < numSamples; ++i) {
+        y = u01(seed) * 2.0f - 1.0f;
+        x = u01(seed) * 2.0f - 1.0f;
+        val = btrig::atan2(y, x, true);
+        sink += val;
+    }
+    end_time = micros();
+    print_result("btrig::atan2", end_time - start_time, sink);
+    Serial.println();
+
+    // Bench: atan
+    Serial.println("--- atan ---");
+
+    // std::atan
+    seed = SEED;
+    sink = 0.0f;
+    start_time = micros();
+    for (uint32_t i = 0; i < numSamples; ++i) {
+        float angle = u01(seed) * TAU;
+        val = atan(angle);
+        sink += val;
+    }
+    end_time = micros();
+    print_result("std::atan", end_time - start_time, sink);
+
+    // btrig::atan
+    seed = SEED;
+    sink = 0.0f;
+    start_time = micros();
+    for (uint32_t i = 0; i < numSamples; ++i) {
+        float angle = u01(seed) * TAU;
+        val = btrig::atan(angle);
+        sink += val;
+    }
+    end_time = micros();
+    print_result("btrig::atan", end_time - start_time, sink);
+    Serial.println();
+
+    // Bench: asin
+    Serial.println("--- asin ---");
+
+    // std::asin
+    seed = SEED;
+    sink = 0.0f;
+    start_time = micros();
+    for (uint32_t i = 0; i < numSamples; ++i) {
+        float z = u01(seed) * 2.0f - 1.0f;
+        val = asin(z);
+        sink += val;
+    }
+    end_time = micros();
+    print_result("std::asin", end_time - start_time, sink);
+
+    // btrig::asin
+    seed = SEED;
+    sink = 0.0f;
+    start_time = micros();
+    for (uint32_t i = 0; i < numSamples; ++i) {
+        float z = u01(seed) * 2.0f - 1.0f;
+        val = btrig::asin(z);
+        sink += val;
+    }
+    end_time = micros();
+    print_result("btrig::asin", end_time - start_time, sink);
+    Serial.println();
+
+    // Bench: acos
+    Serial.println("--- acos ---");
+
+    // std::acos
+    seed = SEED;
+    sink = 0.0f;
+    start_time = micros();
+    for (uint32_t i = 0; i < numSamples; ++i) {
+        float z = u01(seed) * 2.0f - 1.0f;
+        val = acos(z);
+        sink += val;
+    }
+    end_time = micros();
+    print_result("std::acos", end_time - start_time, sink);
+
+    // btrig::acos
+    seed = SEED;
+    sink = 0.0f;
+    start_time = micros();
+    for (uint32_t i = 0; i < numSamples; ++i) {
+        float z = u01(seed) * 2.0f - 1.0f;
+        val = btrig::acos(z);
+        sink += val;
+    }
+    end_time = micros();
+    print_result("btrig::acos", end_time - start_time, sink);
+    Serial.println();
+
+    Serial.println("\n--- END TEST ---");
     delay(25000);
 }

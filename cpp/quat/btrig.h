@@ -2,6 +2,8 @@
 #ifndef BTRIG_H
 #define BTRIG_H
 
+#include <immintrin.h>
+
 namespace btrig {
 
     // --------------------
@@ -31,17 +33,22 @@ namespace btrig {
     constexpr double INV_720 = 1.0 / 720.0;
     constexpr double INV_5040 = 1.0 / 5040.0;
     constexpr double INV_40320 = 1.0 / 40320.0;
+    constexpr double INV_362880 = 2.755731922398589065255731922e-06; //  1/9!
+    constexpr double INV_3628800 = 2.755731922398589065255731922e-07; // 1/10!
+
     constexpr double INV_TAU = 1.0 / TAU;
 
     // Anchor array: [angle][0=theta, 1=cos, 2=sin]
     static double fullCircleAnchors[NUM_ANCHORS_FULL][3];
 
-    // ---- Internal helpers ----
+    // --------------------
+    // Internal helpers
+    // --------------------
     static inline void applyQuadrantTransform(double inx, double iny, int quadrant,
         double& outx, double& outy) {
         switch (quadrant & 3) {
-        case 0: outx = inx; outy = iny; break;
-        case 1: outx = -iny; outy = inx; break;
+        case 0: outx = inx;  outy = iny;  break;
+        case 1: outx = -iny; outy = inx;  break;
         case 2: outx = -inx; outy = -iny; break;
         default: outx = iny; outy = -inx; break;
         }
@@ -93,8 +100,8 @@ namespace btrig {
             int quadrant = static_cast<int>(angle / QUADTAU);
             double x = angle - quadrant * QUADTAU;
 
-            double cosVal = taylorCosFloat(x, 10);
-            double sinVal = taylorSinFloat(x, 10);
+            double cosVal = taylorCosFloat(x, 55);
+            double sinVal = taylorSinFloat(x, 55);
 
             double cosFinal, sinFinal;
             applyQuadrantTransform(cosVal, sinVal, quadrant, cosFinal, sinFinal);
@@ -109,7 +116,9 @@ namespace btrig {
         _InitFullCircleAnchors() { initFullCircleAnchors(); }
     } _initFullCircleAnchorsInstance;
 
-    // ---- Custom trig funcs ----
+    // --------------------
+    // Custom trig funcs
+    // --------------------
     static __forceinline void sin(double angle, bool precise, double& outSin) {
         const double t = angle * ONE_OVER_STEP;
 
@@ -125,8 +134,14 @@ namespace btrig {
 
         double dx, dy;
         if (precise) {
-            dx = 1.0 - d2 * (INV_2 - d2 * (INV_24 - d2 * (INV_720 - d2 * INV_40320)));
-            dy = d * (1.0 - d2 * (INV_6 - d2 * (INV_120 - d2 * INV_5040)));
+            dx = 1.0 - d2 * (INV_2 -
+                d2 * (INV_24 -
+                    d2 * (INV_720 -
+                        d2 * INV_40320)));
+            dy = d * (1.0 -
+                d2 * (INV_6 -
+                    d2 * (INV_120 -
+                        d2 * INV_5040)));
         }
         else {
             dx = 1.0 - d2 * INV_2;
@@ -150,8 +165,14 @@ namespace btrig {
 
         double dx, dy;
         if (precise) {
-            dx = 1.0 - d2 * (INV_2 - d2 * (INV_24 - d2 * (INV_720 - d2 * INV_40320)));
-            dy = d * (1.0 - d2 * (INV_6 - d2 * (INV_120 - d2 * INV_5040)));
+            dx = 1.0 - d2 * (INV_2 -
+                d2 * (INV_24 -
+                    d2 * (INV_720 -
+                        d2 * INV_40320)));
+            dy = d * (1.0 -
+                d2 * (INV_6 -
+                    d2 * (INV_120 -
+                        d2 * INV_5040)));
         }
         else {
             dx = 1.0 - d2 * INV_2;
@@ -176,8 +197,14 @@ namespace btrig {
 
         double dx, dy;
         if (precise) {
-            dx = 1.0 - d2 * (INV_2 - d2 * (INV_24 - d2 * (INV_720 - d2 * INV_40320)));
-            dy = d * (1.0 - d2 * (INV_6 - d2 * (INV_120 - d2 * INV_5040)));
+            dx = 1.0 - d2 * (INV_2 -
+                d2 * (INV_24 -
+                    d2 * (INV_720 -
+                        d2 * INV_40320)));
+            dy = d * (1.0 -
+                d2 * (INV_6 -
+                    d2 * (INV_120 -
+                        d2 * INV_5040)));
         }
         else {
             dx = 1.0 - d2 * INV_2;
@@ -200,13 +227,11 @@ namespace btrig {
         const double z = num / den;
 
         const double z2 = z * z;
-        const double a = z * (
-            0.9998660 +
+        const double a = z * (0.9998660 +
             z2 * (-0.3302995 +
                 z2 * (0.1801410 +
                     z2 * (-0.0851330 +
-                        0.0208351 * z2))))
-            ;
+                        0.0208351 * z2))));
 
         const double angle = swap ? (1.5707963267948966 - a) : a;
 
@@ -237,7 +262,7 @@ namespace btrig {
 
     static inline double asin(double z) {
         const double HALFPI = TAU * 0.25;
-        if (z >= 1.0) return HALFPI;
+        if (z >= 1.0)  return HALFPI;
         if (z <= -1.0) return -HALFPI;
 
         const double t = 1.0 - z * z;
@@ -246,7 +271,7 @@ namespace btrig {
     }
 
     static inline double acos(double x) {
-        if (x >= 1.0) return 0.0;
+        if (x >= 1.0)  return 0.0;
         if (x <= -1.0) return TAU * 0.5;
 
         double t = 1.0 - x * x;
