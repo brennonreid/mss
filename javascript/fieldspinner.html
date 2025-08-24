@@ -30,14 +30,14 @@
       <label>Speed× <span id="spd">1.0</span></label><input id="speed" type="range" min="0.1" max="3" step="0.1" value="1" />
       <label><input id="wire" type="checkbox" checked> wireframe</label>
       <label><input id="axes" type="checkbox" checked> draw axes</label>
-      <small>Using <code>customtrig.js</code> + <code>rotation_core.js</code></small>
+      <small>Using <code>btrig2.js</code> + <code>rotation.js</code></small>
     </div>
     <div class="row"><small>FPS: <span id="fps">–</span></small></div>
   </div>
 
-  <!-- Your libs only -->
-  <script src="customtrig.js" defer></script>
-  <script src="rotation.js" defer></script>
+  <!-- Load your trig first, then rotation helpers -->
+  <script src="btrig2.js"></script>
+  <script src="rotation.js"></script>
 
   <script>
     // ===== Canvas setup =====
@@ -65,7 +65,6 @@
     window.addEventListener('resize', resize);
 
     // ===== Geometry =====
-    // Unit cube centered at origin
     const V = [
       [-1,-1,-1], [ 1,-1,-1], [ 1, 1,-1], [-1, 1,-1],
       [-1,-1, 1], [ 1,-1, 1], [ 1, 1, 1], [-1, 1, 1]
@@ -75,9 +74,6 @@
       [4,5],[5,6],[6,7],[7,4],
       [0,4],[1,5],[2,6],[3,7]
     ];
-
-    // Axes (for gizmo & convenience)
-    const X = [1,0,0], Y = [0,1,0], Z = [0,0,1];
 
     // ===== Camera / projection =====
     let fov = 800; // larger → less perspective
@@ -94,7 +90,7 @@
     let lastT = performance.now();
     let acc=0, frames=0, fps=0;
 
-        // ===== UI bindings =====
+    // ===== UI bindings =====
     function bindRange(input, label){ input.addEventListener('input', ()=>{ label.textContent = parseFloat(input.value).toFixed(1); }); }
     bindRange(hud.wx, hud.wxv); bindRange(hud.wy, hud.wyv); bindRange(hud.wz, hud.wzv);
     hud.speed.addEventListener('input', ()=>{ hud.spd.textContent = parseFloat(hud.speed.value).toFixed(1); });
@@ -108,10 +104,10 @@
       acc += dt; frames++;
       if (acc >= 0.25){ fps = Math.round(frames/acc); frames=0; acc=0; hud.fps.textContent = String(fps); }
 
-      // Advance phases
-      ax = wrapTau(ax + parseFloat(hud.wx.value) * dt);
-      ay = wrapTau(ay + parseFloat(hud.wy.value) * dt);
-      az = wrapTau(az + parseFloat(hud.wz.value) * dt);
+      // Advance phases (use btrig.wrapTau)
+      ax = btrig.wrapTau(ax + parseFloat(hud.wx.value) * dt);
+      ay = btrig.wrapTau(ay + parseFloat(hud.wy.value) * dt);
+      az = btrig.wrapTau(az + parseFloat(hud.wz.value) * dt);
 
       // Clear
       const w = canvas.clientWidth, h = canvas.clientHeight;
@@ -130,7 +126,7 @@
         ctx.strokeStyle = '#7db6e2'; ctx.beginPath(); ctx.moveTo(O[0],O[1]); ctx.lineTo(Zp[0],Zp[1]); ctx.stroke();
       }
 
-      // Rotate each vertex: Z → X → Y (matches your demo order)
+      // Rotate each vertex: Z → X → Y
       const P = new Array(V.length);
       for (let i=0;i<V.length;i++){
         let p = V[i];
