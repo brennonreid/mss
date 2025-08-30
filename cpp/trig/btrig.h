@@ -1,8 +1,9 @@
-#pragma once
+﻿#pragma once
 #ifndef BTRIG_H
 #define BTRIG_H
 
 #include <immintrin.h>
+#include <math.h> // for fma
 
 namespace btrig {
 
@@ -17,7 +18,7 @@ namespace btrig {
     // --------------------
     // Core constants
     // --------------------
-    constexpr double TAU = 6.283185307179586476925286766559; // 2*pi
+    constexpr double TAU = 6.283185307179586476925286766559;
     constexpr double QUADTAU = TAU / 4.0;
     constexpr double STEP = TAU / static_cast<double>(NUM_ANCHORS_FULL);
     constexpr double ONE_OVER_STEP = 1.0 / STEP;
@@ -33,8 +34,8 @@ namespace btrig {
     constexpr double INV_720 = 1.0 / 720.0;
     constexpr double INV_5040 = 1.0 / 5040.0;
     constexpr double INV_40320 = 1.0 / 40320.0;
-    constexpr double INV_362880 = 2.755731922398589065255731922e-06; //  1/9!
-    constexpr double INV_3628800 = 2.755731922398589065255731922e-07; // 1/10!
+    constexpr double INV_362880 = 2.755731922398589065255731922e-06;
+    constexpr double INV_3628800 = 2.755731922398589065255731922e-07;
 
     constexpr double INV_TAU = 1.0 / TAU;
 
@@ -58,7 +59,7 @@ namespace btrig {
         const double k = a * INV_TAU;
         long long q = (long long)k;
         if (a < 0.0 && (double)q != k) --q;
-        return a - (double)q * TAU;
+        return fma(-(double)q, TAU, a);
     }
 
     static inline double taylorCosFloat(double x, int depth) {
@@ -66,7 +67,7 @@ namespace btrig {
         double sum = 1.0;
         for (int i = 1; i <= depth; ++i) {
             term *= -x * x / ((2.0 * i - 1.0) * (2.0 * i));
-            sum += term;
+            sum = fma(1.0, term, sum); // sum += term (via fma to fuse mults inside term if compiled aggressively)
         }
         return sum;
     }
@@ -76,7 +77,7 @@ namespace btrig {
         double sum = x;
         for (int i = 1; i <= depth; ++i) {
             term *= -x * x / ((2.0 * i) * (2.0 * i + 1.0));
-            sum += term;
+            sum = fma(1.0, term, sum); // sum += term
         }
         return sum;
     }
@@ -85,7 +86,7 @@ namespace btrig {
         double& outSin, double& outCos) {
         angle = wrapTau(angle);
         int quadrant = static_cast<int>(angle / QUADTAU);
-        double x = angle - quadrant * QUADTAU;
+        double x = fma(-(double)quadrant, QUADTAU, angle);
 
         double sinVal = taylorSinFloat(x, depth);
         double cosVal = taylorCosFloat(x, depth);
@@ -98,10 +99,16 @@ namespace btrig {
             double angle = i * DEG_STEP_FULL;
 
             int quadrant = static_cast<int>(angle / QUADTAU);
-            double x = angle - quadrant * QUADTAU;
+            double x = fma(-(double)quadrant, QUADTAU, angle);
 
-            double cosVal = taylorCosFloat(x, 55);
-            double sinVal = taylorSinFloat(x, 55);
+            double cosVal = taylorCosFloat(x, 22);
+            double sinVal = taylorSinFloat(x, 22);
+
+            // Used standard library cos/sin functions for higher accuracy
+            // as an optimization trade-off, even though we'd prefer to use
+            // our custom Taylor series-based methods for performance in the future.
+            //double cosVal = std::cos(x);
+            //double sinVal = std::sin(x);
 
             double cosFinal, sinFinal;
             applyQuadrantTransform(cosVal, sinVal, quadrant, cosFinal, sinFinal);
@@ -121,98 +128,128 @@ namespace btrig {
     // --------------------
     static __forceinline void sin(double angle, bool precise, double& outSin) {
         const double t = angle * ONE_OVER_STEP;
-
-        int i = (int)t;
-        i -= (t < 0.0);
+        int i = static_cast<int>(std::floor(t));
 
         const int idx = i & ANCHOR_MASK;
 
-        const double d = (t - i) * STEP;
-        const double d2 = d * d;
-
+        const double d = std::fma(-(double)i, STEP, angle);
+        const double d2 = d * d;                 // (mul is fine)
         const double* a = fullCircleAnchors[idx];
 
         double dx, dy;
         if (precise) {
-            dx = 1.0 - d2 * (INV_2 -
-                d2 * (INV_24 -
-                    d2 * (INV_720 -
-                        d2 * INV_40320)));
-            dy = d * (1.0 -
-                d2 * (INV_6 -
-                    d2 * (INV_120 -
-                        d2 * INV_5040)));
+            double p = std::fma(-d2, INV_40320, INV_720);
+            p = std::fma(-d2, p, INV_24);
+            p = std::fma(-d2, p, INV_2);
+            dx = std::fma(-d2, p, 1.0);
+
+            double q = std::fma(-d2, INV_5040, INV_120);
+            q = std::fma(-d2, q, INV_6);
+            dy = d * std::fma(-d2, q, 1.0);
         }
         else {
-            dx = 1.0 - d2 * INV_2;
+            dx = std::fma(-d2, INV_2, 1.0);
             dy = d;
         }
-        outSin = dx * a[2] + dy * a[1];
+
+        // sin = dx*sin_anchor + dy*cos_anchor
+        outSin = std::fma(dx, a[2], dy * a[1]);
     }
 
     static __forceinline void cos(double angle, bool precise, double& outCos) {
         const double t = angle * ONE_OVER_STEP;
-
-        int i = (int)t;
-        i -= (t < 0.0);
+        int i = static_cast<int>(std::floor(t));
 
         const int idx = i & ANCHOR_MASK;
 
-        const double d = (t - i) * STEP;
-        const double d2 = d * d;
+        const double d = std::fma(-(double)i, STEP, angle);
+        const double d2 = d * d;                 // (mul is fine)
+
+
+
 
         const double* a = fullCircleAnchors[idx];
 
         double dx, dy;
         if (precise) {
-            dx = 1.0 - d2 * (INV_2 -
-                d2 * (INV_24 -
-                    d2 * (INV_720 -
-                        d2 * INV_40320)));
-            dy = d * (1.0 -
-                d2 * (INV_6 -
-                    d2 * (INV_120 -
-                        d2 * INV_5040)));
+            double p = std::fma(-d2, INV_40320, INV_720);
+            p = std::fma(-d2, p, INV_24);
+            p = std::fma(-d2, p, INV_2);
+            dx = std::fma(-d2, p, 1.0);
+
+            double q = std::fma(-d2, INV_5040, INV_120);
+            q = std::fma(-d2, q, INV_6);
+            dy = d * std::fma(-d2, q, 1.0);
         }
         else {
-            dx = 1.0 - d2 * INV_2;
+            dx = std::fma(-d2, INV_2, 1.0);
             dy = d;
         }
-        outCos = dx * a[1] - dy * a[2];
+
+        // cos = dx*cos_anchor - dy*sin_anchor
+        outCos = std::fma(dx, a[1], -(dy * a[2]));
     }
+
 
     static __forceinline void sincos(double angle, bool precise,
         double& cosOut, double& sinOut) {
+        // exact same i / idx logic as you have
         const double t = angle * ONE_OVER_STEP;
-
         int i = (int)t;
         i -= (t < 0.0);
-
         const int idx = i & ANCHOR_MASK;
 
-        const double d = (t - i) * STEP;
-        const double d2 = d * d;
+        // compute residual in one rounding: d = angle - i*STEP
+        const double d = std::fma(-(double)i, STEP, angle);
+        const double d2 = d * d;                 // (mul is fine)
+
 
         const double* a = fullCircleAnchors[idx];
 
         double dx, dy;
         if (precise) {
-            dx = 1.0 - d2 * (INV_2 -
-                d2 * (INV_24 -
-                    d2 * (INV_720 -
-                        d2 * INV_40320)));
-            dy = d * (1.0 -
-                d2 * (INV_6 -
-                    d2 * (INV_120 -
-                        d2 * INV_5040)));
+            double p = std::fma(-d2, INV_40320, INV_720);
+            p = std::fma(-d2, p, INV_24);
+            p = std::fma(-d2, p, INV_2);
+            dx = std::fma(-d2, p, 1.0);
+
+            double q = std::fma(-d2, INV_5040, INV_120);
+            q = std::fma(-d2, q, INV_6);
+            dy = d * std::fma(-d2, q, 1.0);
         }
         else {
-            dx = 1.0 - d2 * INV_2;
+            dx = std::fma(-d2, INV_2, 1.0);
             dy = d;
         }
 
-        cosOut = dx * a[1] - dy * a[2];
-        sinOut = dx * a[2] + dy * a[1];
+        cosOut = fma(dx, a[1], -(dy * a[2]));
+        sinOut = fma(dx, a[2], (dy * a[1]));
+    }
+
+
+
+    static __forceinline double tan(double angle) {
+        double c, s;
+        sincos(angle, /*precise=*/true, c, s);
+        return s / c;
+    }
+
+    /*
+    static_assert(sizeof(double) == 8, "fast_sqrt assumes 64-bit IEEE-754 double");
+
+    static inline double fast_sqrt(double x) {
+        if (x <= 0.0) return 0.0;
+        union { double d; unsigned long long u; } v;
+        v.d = x;
+        v.u = 0x5fe6ec85e7de30daULL - (v.u >> 1);
+
+        double y = v.d;
+        const double xhalf = 0.5 * x;
+
+        y = y * (1.5 - fma(xhalf, y * y, 0.0)); // y *= (1.5 - xhalf*y*y)
+        y = y * (1.5 - fma(xhalf, y * y, 0.0));
+
+        return x * y;
     }
 
     static __forceinline double atan2(double y, double x) {
@@ -227,11 +264,11 @@ namespace btrig {
         const double z = num / den;
 
         const double z2 = z * z;
-        const double a = z * (0.9998660 +
-            z2 * (-0.3302995 +
-                z2 * (0.1801410 +
-                    z2 * (-0.0851330 +
-                        0.0208351 * z2))));
+        double p = fma(0.0208351, z2, -0.0851330);
+        p = fma(p, z2, 0.1801410);
+        p = fma(p, z2, -0.3302995);
+        p = fma(p, z2, 0.9998660);
+        const double a = z * p;
 
         const double angle = swap ? (1.5707963267948966 - a) : a;
 
@@ -243,22 +280,7 @@ namespace btrig {
         }
     }
 
-    static_assert(sizeof(double) == 8, "fast_sqrt assumes 64-bit IEEE-754 double");
 
-    static inline double fast_sqrt(double x) {
-        if (x <= 0.0) return 0.0;
-        union { double d; unsigned long long u; } v;
-        v.d = x;
-        v.u = 0x5fe6ec85e7de30daULL - (v.u >> 1);
-
-        double y = v.d;
-        const double xhalf = 0.5 * x;
-
-        y = y * (1.5 - xhalf * y * y);
-        y = y * (1.5 - xhalf * y * y);
-
-        return x * y;
-    }
 
     static inline double asin(double z) {
         const double HALFPI = TAU * 0.25;
@@ -279,16 +301,10 @@ namespace btrig {
         return atan2(s, x);
     }
 
-    static __forceinline double tan(double angle) {
-        double c, s;
-        sincos(angle, /*precise=*/true, c, s);
-        return s / c;
-    }
-
     static __forceinline double atan(double y) {
         return atan2(y, 1.0);
     }
-
+    */
 } // namespace btrig
 
 #endif // BTRIG_H
