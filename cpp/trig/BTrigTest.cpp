@@ -16,6 +16,7 @@
 
 #include "btrig.h"
 #include "btrigsimd.h"
+#include "btrigdouble.h"   // <<< NEW: alternate accuracy path (hi/lo + optional DD)
 #include "logexp.h"
 
 using namespace std;
@@ -173,7 +174,7 @@ static inline void print_stats(const char* label, const ErrStats& es) {
         << "\n";
 }
 
-// sin/cos pair accuracy vs std::
+// sin/cos pair accuracy vs std:: (btrig baseline)
 template<bool PRECISE>
 ErrStats accuracy_sincos(const double* A, int N) {
     ErrStats es;
@@ -181,6 +182,30 @@ ErrStats accuracy_sincos(const double* A, int N) {
     for (int i = 0; i < N; ++i) {
         double c_ref = std::cos(A[i]), s_ref = std::sin(A[i]);
         double c_got, s_got; btrig::sincos(A[i], PRECISE, c_got, s_got);
+
+        double eC = std::fabs(c_got - c_ref);
+        double eS = std::fabs(s_got - s_ref);
+        sumsq += (long double)eC * (long double)eC;
+        sumsq += (long double)eS * (long double)eS;
+
+        double e = (eC > eS) ? eC : eS;
+        if (e > es.max_abs) { es.max_abs = e; es.arg_index = i; }
+
+        if (ulp_is_fair(c_ref, c_got)) bump_ulp(es, ulp_diff(c_got, c_ref));
+        if (ulp_is_fair(s_ref, s_got)) bump_ulp(es, ulp_diff(s_got, s_ref));
+    }
+    finish_stats(es, sumsq, /*denom=*/2ull * (uint64_t)N);
+    return es;
+}
+
+// ----- NEW: sin/cos pair accuracy vs std:: (btrigdouble) -----
+template<bool PRECISE>
+ErrStats accuracy_sincos_double(const double* A, int N) {
+    ErrStats es;
+    long double sumsq = 0.0L;
+    for (int i = 0; i < N; ++i) {
+        double c_ref = std::cos(A[i]), s_ref = std::sin(A[i]);
+        double c_got, s_got; btrigdouble::sincos(A[i], PRECISE, c_got, s_got);
 
         double eC = std::fabs(c_got - c_ref);
         double eS = std::fabs(s_got - s_ref);
@@ -418,6 +443,36 @@ static std::vector<Hit> topk_trouble_sincos(const double* A, int N, int K) {
     std::sort(out.begin(), out.end(), [](const Hit& A, const Hit& B) { return A.ulp > B.ulp; });
     return out;
 }
+
+// ----- NEW: TOPK trouble-maker for btrigdouble -----
+static std::vector<Hit> topk_trouble_sincos_double(const double* A, int N, int K) {
+    struct Cmp { bool operator()(const Hit& a, const Hit& b) const { return a.ulp > b.ulp; } };
+    std::priority_queue<Hit, std::vector<Hit>, Cmp> pq;
+    auto consider = [&](bool is_sin, int i, double angle, double got, double refv) {
+        if (!ulp_is_fair(refv, got)) return;
+        uint64_t u = ulp_diff(got, refv);
+        Hit h{}; h.is_sin = is_sin; h.i = i; h.angle = angle; h.ulp = u;
+        h.abs_err = std::fabs(got - refv);
+        h.got = got; h.refv = refv;
+        h.ulp_size = ulp_at(refv);
+        h.edge = decode_edge(angle);
+        h.center = decode_center(angle);
+        if ((int)pq.size() < K) pq.push(h);
+        else if (u > pq.top().ulp) { pq.pop(); pq.push(h); }
+        };
+    for (int i = 0; i < N; ++i) {
+        double a = A[i];
+        double c_ref = ref_cos(a), s_ref = ref_sin(a);
+        double c_got, s_got; btrigdouble::sincos(a, /*precise=*/true, c_got, s_got);
+        consider(false, i, a, c_got, c_ref);
+        consider(true, i, a, s_got, s_ref);
+    }
+    std::vector<Hit> out; out.reserve(pq.size());
+    while (!pq.empty()) { out.push_back(pq.top()); pq.pop(); }
+    std::sort(out.begin(), out.end(), [](const Hit& A, const Hit& B) { return A.ulp > B.ulp; });
+    return out;
+}
+
 static void print_trouble_list(const std::vector<Hit>& hits) {
     std::cout << "\n=== TOP TROUBLE CASES (sorted by ULP error) ===\n";
     std::cout << std::left
@@ -484,14 +539,20 @@ static inline void hardened_index_residual(double angle, int& idx, double& d) {
     const double k = angle / TAU;
     long long q = (long long)k;
     if (angle < 0.0 && (double)q != k) --q;
+
     const double ang = std::fma(-(double)q, TAU, angle);
+
     const double t = ang * ONE_OVER_STEP;
     int i = fast_floor_idx(t);
     idx = i & ANCHOR_MASK;
+
     d = std::fma(-(double)i, STEP, ang);
+
+    // wrap using the mask (since NUM_ANCHORS_FULL is a power of two)
     if (d >= STEP) { d -= STEP; idx = (idx + 1) & ANCHOR_MASK; }
     else if (d < 0.0) { d += STEP; idx = (idx - 1) & ANCHOR_MASK; }
 }
+
 static inline double len2(double x, double y) { return std::fma(x, x, y * y); }
 
 static void trace_angle(double angle, bool precise) {
@@ -595,7 +656,7 @@ int main() {
     std::cout << "No SIMD detected.\n";
 #endif
 
-    const int N = 5'500'000;
+    const int N = 15'500'000;
 
     // Build shared inputs ONCE so every test uses the same ranges/values
     mt19937_64 rng(12345);
@@ -608,6 +669,12 @@ int main() {
         Z[i] = B[i];
     }
 
+    // NEW: initialize hi/lo pivots for btrigdouble once
+
+    btrig::initFullCircleAnchors();
+    btrigdouble::init();
+
+
     cout << "\n--- TRIG SPEED TEST (" << N << " samples, unified inputs) ---\n\n";
 
     BEST_OF_3("std::sin/cos pair (calls)",
@@ -615,15 +682,30 @@ int main() {
             return std::sin(a) + std::cos(a);
             }, A.data(), B.data(), N));
 
-    BEST_OF_3("btrig::sincos fast (calls)",
-        bench_over_arrays_calls("btrig::sincos fast (calls)", [](double a, double) {
-            double c, s; btrig::sincos(a, false, c, s); return c + s;
+    BEST_OF_3("btrigdouble::sincos (calls)",
+        bench_over_arrays_calls("btrigdouble::sincos (calls)", [](double a, double) {
+            double c, s; btrigdouble::sincos(a, true, c, s); return c + s;
             }, A.data(), B.data(), N));
 
     BEST_OF_3("btrig::sincos precise (calls)",
         bench_over_arrays_calls("btrig::sincos precise (calls)", [](double a, double) {
             double c, s; btrig::sincos(a, true, c, s); return c + s;
             }, A.data(), B.data(), N));
+
+    // ----- NEW: btrigdouble accuracy path benches -----
+    /*
+    BEST_OF_3("btrigdouble::sincos fast (calls)",
+        bench_over_arrays_calls("btrigdouble::sincos fast (calls)", [](double a, double) {
+            double c, s; btrigdouble::sincos(a, false, c, s); return c + s;
+            }, A.data(), B.data(), N));
+    */
+    
+
+    BEST_OF_3("btrig::sincos fast (calls)",
+        bench_over_arrays_calls("btrig::sincos fast (calls)", [](double a, double) {
+            double c, s; btrig::sincos(a, false, c, s); return c + s;
+            }, A.data(), B.data(), N));
+
 
     cout << "\n";
 
@@ -687,11 +769,19 @@ int main() {
     // =========================
     cout << "\n=== ACCURACY REPORT vs std:: ===\n";
     {
+        //auto e_fast_d = accuracy_sincos_double<false>(A.data(), N);
+        auto e_prec_d = accuracy_sincos_double<true >(A.data(), N);
+        //print_stats("btrigdouble::sincos fast", e_fast_d);
+        print_stats("btrigdouble::sincos precise", e_prec_d);
+    }
+    
+    {
         auto e_fast = accuracy_sincos<false>(A.data(), N);
         auto e_precise = accuracy_sincos<true >(A.data(), N);
-        print_stats("sincos fast", e_fast);
-        print_stats("sincos precise", e_precise);
+        print_stats("btrig::sincos precise", e_precise);
+        print_stats("btrig::sincos fast", e_fast);
     }
+    
     {
         auto e_sin_fast = accuracy_single(A.data(), nullptr, N,
             [](double a, double) { return std::sin(a); },
@@ -699,8 +789,9 @@ int main() {
         auto e_sin_prec = accuracy_single(A.data(), nullptr, N,
             [](double a, double) { return std::sin(a); },
             [](double a, double) { double s; btrig::sin(a, true, s);  return s; });
-        print_stats("sin fast", e_sin_fast);
-        print_stats("sin precise", e_sin_prec);
+        print_stats("btrig::sin precise", e_sin_prec);
+        print_stats("btrig::sin fast", e_sin_fast);
+        
     }
     {
         auto e_cos_fast = accuracy_single(A.data(), nullptr, N,
@@ -709,32 +800,43 @@ int main() {
         auto e_cos_prec = accuracy_single(A.data(), nullptr, N,
             [](double a, double) { return std::cos(a); },
             [](double a, double) { double c; btrig::cos(a, true, c);  return c; });
-        print_stats("cos fast", e_cos_fast);
-        print_stats("cos precise", e_cos_prec);
+        print_stats("btrig::cos precise", e_cos_prec);
+        print_stats("btrig::cos fast", e_cos_fast);
+        
     }
+
+    
+
     cout << "=== END ACCURACY REPORT ===\n";
 
-    // Random sample dump
+    // Random sample dump (original btrig precise)
     print_random_cs_diffs_precise(rng, 10);
 
-    // Audits (index/residual + LUT seam)
+    // Audits (index/residual + LUT seam) for original btrig
     btrig::run_audits();
 
     // =========================
-    // ULP TROUBLE-MAKER REPORT + auto-trace
+    // ULP TROUBLE-MAKER REPORTS + auto-trace
     // =========================
     {
         const int TOPK = 20;
+        // Original
         auto worst = topk_trouble_sincos(A.data(), N, TOPK);
         print_trouble_list(worst);
 
         if (!worst.empty()) {
             const auto& h = worst.front();
-            std::cout << "\n>>> Auto-tracing worst case (" << (h.is_sin ? "sin" : "cos")
+            std::cout << "\n>>> Auto-tracing worst case (btrig "
+                << (h.is_sin ? "sin" : "cos")
                 << "), angle=" << std::setprecision(17) << h.angle
                 << ", ULP=" << h.ulp << "\n";
             trace_angle(h.angle, /*precise=*/true);
         }
+
+        cout << "=== btrigdouble ===\n";
+        // NEW: btrigdouble
+        auto worst_double = topk_trouble_sincos_double(A.data(), N, TOPK);
+        print_trouble_list(worst_double);
     }
 
     return 0;

@@ -2,15 +2,15 @@
 #ifndef BTRIG_H
 #define BTRIG_H
 
-#include <immintrin.h>
 #include <math.h> // for fma
+#include <immintrin.h>
 
 namespace btrig {
 
     // --------------------
     // Configuration
     // --------------------
-    constexpr int TRIG_ANCHORS_BASE_POW = 5;
+    constexpr int TRIG_ANCHORS_BASE_POW = 6;
     constexpr int NUM_ANCHORS_QUADRANT = 1 << TRIG_ANCHORS_BASE_POW;
     constexpr int NUM_ANCHORS_FULL = NUM_ANCHORS_QUADRANT * 4;
     constexpr int ANCHOR_MASK = NUM_ANCHORS_FULL - 1;
@@ -94,6 +94,112 @@ namespace btrig {
         applyQuadrantTransform(cosVal, sinVal, quadrant, outCos, outSin);
     }
 
+    // Function using long double for higher precision during initialization
+    static inline long double taylorCosLongDouble(double x, int depth) {
+        long double term = 1.0L;  // long double for higher precision
+        long double sum = 1.0L;
+        for (int i = 1; i <= depth; ++i) {
+            term *= fma(-x * x, 1.0L / ((2.0L * i - 1.0L) * (2.0L * i)), 0.0L);
+            // using long double
+            sum = fma(1.0L, term, sum); // sum += term (via fma to fuse multiplications inside term)
+        }
+        return sum;
+    }
+
+    static inline long double taylorSinLongDouble(double x, int depth) {
+        long double term = x, sum = x;
+        const long double x2 = (long double)x * (long double)x;  // optional: hoist
+        for (int i = 1; i <= depth; ++i) {
+            term *= fma(-x2, 1.0L / ((2.0L * i) * (2.0L * i + 1.0L)), 0.0L);
+            sum = fma(1.0L, term, sum);
+        }
+        return sum;
+    }
+
+    // Evaluate cos(x) with Horner in long double using even Taylor terms up to max_even (e.g. 22)
+    static inline long double cos_horner_ld(double x, int max_even) {
+        // Highest even power actually used
+        const int twoN = (max_even & ~1);         // floor to even
+        const int N = twoN / 2;
+
+        const long double z = (long double)x * (long double)x; // x^2
+
+        // c_N = (-1)^N / (2N)!
+        long double cN = 1.0L;
+        for (int m = 2; m <= 2 * N; ++m) cN /= (long double)m;
+        if (N & 1) cN = -cN;
+
+        long double acc = cN;
+        // Horner down: c_k = -c_{k+1} * (2k+2)(2k+1)
+        for (int k = N - 1; k >= 1; --k) {
+            cN = -cN * (long double)(2 * (k + 1)) * (long double)(2 * (k + 1) - 1);
+            acc = fma(acc, z, cN);
+        }
+        // Final "+ c0" with c0 = 1
+        acc = fma(acc, z, 1.0L);
+        return acc;
+    }
+
+    // Evaluate sin(x) with Horner in long double using odd Taylor terms up to max_odd (e.g. 21 or 23)
+    static inline long double sin_horner_ld(double x, int max_odd) {
+        // Highest odd power actually used
+        const int twoNp1 = (max_odd | 1);         // ceil to odd
+        const int N = (twoNp1 - 1) / 2;
+
+        const long double xl = (long double)x;
+        const long double z = xl * xl;           // x^2
+
+        // s_N = (-1)^N / (2N+1)!
+        long double sN = 1.0L;
+        for (int m = 2; m <= 2 * N + 1; ++m) sN /= (long double)m;
+        if (N & 1) sN = -sN;
+
+        long double acc = sN;
+        // Horner down: s_k = -s_{k+1} * (2k+3)(2k+2)
+        for (int k = N - 1; k >= 0; --k) {
+            sN = -sN * (long double)(2 * (k + 1) + 1) * (long double)(2 * (k + 1));
+            acc = fma(acc, z, sN);
+        }
+        // sin(x) = x * P(z)
+        return fma(xl, acc, 0.0L);
+    }
+
+    // Convenience: init-time sin/cos via Horner (keep your quadrant handling)
+    static inline void hornerSinCosInit(double angle, int depth, double& outSin, double& outCos) {
+        // Your wrap + quadrant split
+        angle = wrapTau(angle);
+        int quadrant = (int)(angle / QUADTAU);
+        double x = fma(-(double)quadrant, QUADTAU, angle);
+
+        long double c = cos_horner_ld(x, depth);         // even terms up to 'depth'
+        long double s = sin_horner_ld(x, depth - 1);     // odd terms up to 'depth-1' (typical pairing)
+
+        //long double c = std::cos(x);
+        //long double s = std::sin(x);
+
+        double cosVal = (double)c;
+        double sinVal = (double)s;
+        applyQuadrantTransform(cosVal, sinVal, quadrant, outCos, outSin);
+    }
+
+    // …and in your LUT builder:
+    static void initFullCircleAnchors() {
+        for (int i = 0; i < NUM_ANCHORS_FULL; ++i) {
+            double angle = i * DEG_STEP_FULL;
+            double s, c;
+            
+            hornerSinCosInit(angle, /*depth=*/22, s, c);
+            //s = std::sin(angle);
+            ///c = std::cos(angle);
+            
+            fullCircleAnchors[i][0] = angle;
+            fullCircleAnchors[i][1] = c;
+            fullCircleAnchors[i][2] = s;
+        }
+    }
+
+    /*
+    // Full Circle Table Initialization
     static void initFullCircleAnchors() {
         for (int i = 0; i < NUM_ANCHORS_FULL; ++i) {
             double angle = i * DEG_STEP_FULL;
@@ -101,23 +207,21 @@ namespace btrig {
             int quadrant = static_cast<int>(angle / QUADTAU);
             double x = fma(-(double)quadrant, QUADTAU, angle);
 
-            double cosVal = taylorCosFloat(x, 22);
-            double sinVal = taylorSinFloat(x, 22);
+            // Using high precision during table initialization
+            long double cosVal = taylorCosLongDouble(x, 12);  // Higher precision initialization
+            long double sinVal = taylorSinLongDouble(x, 12);  // Higher precision initialization
 
-            // Used standard library cos/sin functions for higher accuracy
-            // as an optimization trade-off, even though we'd prefer to use
-            // our custom Taylor series-based methods for performance in the future.
-            //double cosVal = std::cos(x);
-            //double sinVal = std::sin(x);
-
+            // Apply the quadrant transform and store the result
             double cosFinal, sinFinal;
-            applyQuadrantTransform(cosVal, sinVal, quadrant, cosFinal, sinFinal);
+            applyQuadrantTransform(static_cast<double>(cosVal), static_cast<double>(sinVal), quadrant, cosFinal, sinFinal);
 
+            // Store the result back into the LUT as double
             fullCircleAnchors[i][0] = angle;
             fullCircleAnchors[i][1] = cosFinal;
             fullCircleAnchors[i][2] = sinFinal;
         }
     }
+    */
 
     static struct _InitFullCircleAnchors {
         _InitFullCircleAnchors() { initFullCircleAnchors(); }
@@ -128,103 +232,104 @@ namespace btrig {
     // --------------------
     static __forceinline void sin(double angle, bool precise, double& outSin) {
         const double t = angle * ONE_OVER_STEP;
-        int i = static_cast<int>(std::floor(t));
+        int i = static_cast<int>(floor(t));
 
-        const int idx = i & ANCHOR_MASK;
+        // seam-cancel pivot: previous cell
+        const int idx = (i - 1) & ANCHOR_MASK;
 
-        const double d = std::fma(-(double)i, STEP, angle);
-        const double d2 = d * d;                 // (mul is fine)
+        // residual from that pivot: angle - (i-1)*STEP  => in [STEP, 2*STEP)
+        const double d = fma(-(double)(i - 1), STEP, angle);
+        const double d2 = d * d;
         const double* a = fullCircleAnchors[idx];
 
         double dx, dy;
         if (precise) {
-            double p = std::fma(-d2, INV_40320, INV_720);
-            p = std::fma(-d2, p, INV_24);
-            p = std::fma(-d2, p, INV_2);
-            dx = std::fma(-d2, p, 1.0);
+            double p = fma(-d2, INV_40320, INV_720);
+            p = fma(-d2, p, INV_24);
+            p = fma(-d2, p, INV_2);
+            dx = fma(-d2, p, 1.0);
 
-            double q = std::fma(-d2, INV_5040, INV_120);
-            q = std::fma(-d2, q, INV_6);
-            dy = d * std::fma(-d2, q, 1.0);
+            double q = fma(-d2, INV_5040, INV_120);
+            q = fma(-d2, q, INV_6);
+            dy = d * fma(-d2, q, 1.0);
         }
         else {
-            dx = std::fma(-d2, INV_2, 1.0);
+            dx = fma(-d2, INV_2, 1.0);
             dy = d;
         }
 
         // sin = dx*sin_anchor + dy*cos_anchor
-        outSin = std::fma(dx, a[2], dy * a[1]);
+        outSin = fma(dx, a[2], dy * a[1]);
     }
 
     static __forceinline void cos(double angle, bool precise, double& outCos) {
         const double t = angle * ONE_OVER_STEP;
-        int i = static_cast<int>(std::floor(t));
+        int i = static_cast<int>(floor(t));
 
-        const int idx = i & ANCHOR_MASK;
+        // seam-cancel pivot: previous cell
+        const int idx = (i - 1) & ANCHOR_MASK;
 
-        const double d = std::fma(-(double)i, STEP, angle);
-        const double d2 = d * d;                 // (mul is fine)
-
-
-
-
+        // residual from that pivot
+        const double d = fma(-(double)(i - 1), STEP, angle);
+        const double d2 = d * d;
         const double* a = fullCircleAnchors[idx];
 
         double dx, dy;
         if (precise) {
-            double p = std::fma(-d2, INV_40320, INV_720);
-            p = std::fma(-d2, p, INV_24);
-            p = std::fma(-d2, p, INV_2);
-            dx = std::fma(-d2, p, 1.0);
+            double p = fma(-d2, INV_40320, INV_720);
+            p = fma(-d2, p, INV_24);
+            p = fma(-d2, p, INV_2);
+            dx = fma(-d2, p, 1.0);
 
-            double q = std::fma(-d2, INV_5040, INV_120);
-            q = std::fma(-d2, q, INV_6);
-            dy = d * std::fma(-d2, q, 1.0);
+            double q = fma(-d2, INV_5040, INV_120);
+            q = fma(-d2, q, INV_6);
+            dy = d * fma(-d2, q, 1.0);
         }
         else {
-            dx = std::fma(-d2, INV_2, 1.0);
+            dx = fma(-d2, INV_2, 1.0);
             dy = d;
         }
 
         // cos = dx*cos_anchor - dy*sin_anchor
-        outCos = std::fma(dx, a[1], -(dy * a[2]));
+        outCos = fma(dx, a[1], -(dy * a[2]));
     }
 
-
     static __forceinline void sincos(double angle, bool precise,
-        double& cosOut, double& sinOut) {
-        // exact same i / idx logic as you have
+        double& cosOut, double& sinOut)
+    {
         const double t = angle * ONE_OVER_STEP;
-        int i = (int)t;
-        i -= (t < 0.0);
-        const int idx = i & ANCHOR_MASK;
+        int i = static_cast<int>(floor(t));
 
-        // compute residual in one rounding: d = angle - i*STEP
-        const double d = std::fma(-(double)i, STEP, angle);
-        const double d2 = d * d;                 // (mul is fine)
+        // seam-cancel pivot: previous cell
+        const int idx = (i - 1) & ANCHOR_MASK;
 
-
+        // residual from that pivot
+        const double d = fma(-(double)(i - 1), STEP, angle);
+        const double d2 = d * d;
         const double* a = fullCircleAnchors[idx];
 
         double dx, dy;
         if (precise) {
-            double p = std::fma(-d2, INV_40320, INV_720);
-            p = std::fma(-d2, p, INV_24);
-            p = std::fma(-d2, p, INV_2);
-            dx = std::fma(-d2, p, 1.0);
+            double p = fma(-d2, INV_40320, INV_720);
+            p = fma(-d2, p, INV_24);
+            p = fma(-d2, p, INV_2);
+            dx = fma(-d2, p, 1.0);
 
-            double q = std::fma(-d2, INV_5040, INV_120);
-            q = std::fma(-d2, q, INV_6);
-            dy = d * std::fma(-d2, q, 1.0);
+            double q = fma(-d2, INV_5040, INV_120);
+            q = fma(-d2, q, INV_6);
+            dy = d * fma(-d2, q, 1.0);
         }
         else {
-            dx = std::fma(-d2, INV_2, 1.0);
+            dx = fma(-d2, INV_2, 1.0);
             dy = d;
         }
 
+        // rotate about biased anchor
         cosOut = fma(dx, a[1], -(dy * a[2]));
-        sinOut = fma(dx, a[2], (dy * a[1]));
+        sinOut = fma(dx, a[2], dy * a[1]);
     }
+
+
 
 
 
@@ -233,6 +338,8 @@ namespace btrig {
         sincos(angle, /*precise=*/true, c, s);
         return s / c;
     }
+
+
 
     /*
     static_assert(sizeof(double) == 8, "fast_sqrt assumes 64-bit IEEE-754 double");
