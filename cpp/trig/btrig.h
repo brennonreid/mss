@@ -19,6 +19,10 @@ namespace btrig {
     // Core constants
     // --------------------
     constexpr double TAU = 6.283185307179586476925286766559;
+    constexpr double PI = TAU / 2.0;
+    constexpr double PI_2 = TAU / 4.0;
+    constexpr double PI_4 = TAU / 8.0;
+
     constexpr double QUADTAU = TAU / 4.0;
     constexpr double STEP = TAU / static_cast<double>(NUM_ANCHORS_FULL);
     constexpr double ONE_OVER_STEP = 1.0 / STEP;
@@ -56,11 +60,13 @@ namespace btrig {
     }
 
     static inline double wrapTau(double a) {
-        const double k = a * INV_TAU;
-        long long q = (long long)k;
-        if (a < 0.0 && (double)q != k) --q;
-        return fma(-(double)q, TAU, a);
+        // Scale into turns
+        double k = a * INV_TAU;
+        // Round toward -∞ without int conversion
+        double q = floor(k);
+        return fma(-q, TAU, a);
     }
+
 
     static inline double taylorCosFloat(double x, int depth) {
         double term = 1.0;
@@ -115,6 +121,8 @@ namespace btrig {
         }
         return sum;
     }
+
+
 
     // Evaluate cos(x) with Horner in long double using even Taylor terms up to max_even (e.g. 22)
     static inline long double cos_horner_ld(double x, int max_even) {
@@ -182,46 +190,65 @@ namespace btrig {
         applyQuadrantTransform(cosVal, sinVal, quadrant, outCos, outSin);
     }
 
-    // …and in your LUT builder:
+
     static void initFullCircleAnchors() {
+        // 1) Compute the step rotation with your long-double Horner
+        //    (depth 22/21 is what you were already using)
+        const long double step_ld = (long double)STEP;
+        //const long double c_step_ld = std::cos(step_ld);
+        //const long double s_step_ld = std::sin(step_ld);
+
+        const long double c_step_ld = cos_horner_ld((double)step_ld, /*max_even=*/22);
+        const long double s_step_ld = sin_horner_ld((double)step_ld, /*max_odd = even-1*/21);
+
+        const double c_step = (double)c_step_ld;
+        const double s_step = (double)s_step_ld;
+
+        // 2) Start at angle 0 exactly
+        double c = 1.0, s = 0.0;
+
         for (int i = 0; i < NUM_ANCHORS_FULL; ++i) {
-            double angle = i * DEG_STEP_FULL;
-            double s, c;
-            
-            hornerSinCosInit(angle, /*depth=*/22, s, c);
-            //s = std::sin(angle);
-            ///c = std::cos(angle);
-            
-            fullCircleAnchors[i][0] = angle;
+            const double theta = (double)i * STEP;
+
+            // Store: [theta, cos, sin]
+            fullCircleAnchors[i][0] = theta;
             fullCircleAnchors[i][1] = c;
             fullCircleAnchors[i][2] = s;
+
+            // Advance by one STEP using the same precise rotation each time
+            // [c', s'] = R(STEP) * [c, s]
+            double nc = std::fma(-s_step, s, c_step * c); // c*cs - s*ss
+            double ns = std::fma(c_step, s, s_step * c); // s*cs + c*ss
+
+            // Re-unitize to kill drift (tiny cost, huge stability win)
+            double r2 = std::fma(nc, nc, ns * ns);
+            double rinv = 1.0 / std::sqrt(r2);
+            c = nc * rinv;
+            s = ns * rinv;
         }
+
+        /*
+        constexpr int Q = NUM_ANCHORS_FULL / 4;
+
+        fullCircleAnchors[0][1] = 1.0;  // cos(0)
+        fullCircleAnchors[0][2] = 0.0;  // sin(0)
+
+        // π/2
+        fullCircleAnchors[1 * Q][1] = 0.0;
+        fullCircleAnchors[1 * Q][2] = 1.0;
+
+        // π
+        fullCircleAnchors[2 * Q][1] = -1.0;
+        fullCircleAnchors[2 * Q][2] = 0.0;
+
+        // 3π/2
+        fullCircleAnchors[3 * Q][1] = 0.0;
+        fullCircleAnchors[3 * Q][2] = -1.0;
+        // 3) Enforce exact periodic start (optional, nice for bit-tests)
+        */
     }
 
-    /*
-    // Full Circle Table Initialization
-    static void initFullCircleAnchors() {
-        for (int i = 0; i < NUM_ANCHORS_FULL; ++i) {
-            double angle = i * DEG_STEP_FULL;
 
-            int quadrant = static_cast<int>(angle / QUADTAU);
-            double x = fma(-(double)quadrant, QUADTAU, angle);
-
-            // Using high precision during table initialization
-            long double cosVal = taylorCosLongDouble(x, 12);  // Higher precision initialization
-            long double sinVal = taylorSinLongDouble(x, 12);  // Higher precision initialization
-
-            // Apply the quadrant transform and store the result
-            double cosFinal, sinFinal;
-            applyQuadrantTransform(static_cast<double>(cosVal), static_cast<double>(sinVal), quadrant, cosFinal, sinFinal);
-
-            // Store the result back into the LUT as double
-            fullCircleAnchors[i][0] = angle;
-            fullCircleAnchors[i][1] = cosFinal;
-            fullCircleAnchors[i][2] = sinFinal;
-        }
-    }
-    */
 
     static struct _InitFullCircleAnchors {
         _InitFullCircleAnchors() { initFullCircleAnchors(); }
@@ -231,15 +258,20 @@ namespace btrig {
     // Custom trig funcs
     // --------------------
     static __forceinline void sin(double angle, bool precise, double& outSin) {
+        // reduce into [0, TAU)
+        angle = wrapTau(angle);
+
         const double t = angle * ONE_OVER_STEP;
-        int i = static_cast<int>(floor(t));
+        int i = static_cast<int>(std::floor(t));
 
-        // seam-cancel pivot: previous cell
-        const int idx = (i - 1) & ANCHOR_MASK;
+        // right-edge pivot: idx+1
+        const int pivot = i + 2;
+        const int idx = pivot & ANCHOR_MASK;
 
-        // residual from that pivot: angle - (i-1)*STEP  => in [STEP, 2*STEP)
-        const double d = fma(-(double)(i - 1), STEP, angle);
+        // residual spans [-STEP, +STEP]
+        const double d = std::fma(-(double)pivot, STEP, angle);
         const double d2 = d * d;
+
         const double* a = fullCircleAnchors[idx];
 
         double dx, dy;
@@ -263,15 +295,20 @@ namespace btrig {
     }
 
     static __forceinline void cos(double angle, bool precise, double& outCos) {
+        // reduce into [0, TAU)
+        angle = wrapTau(angle);
+
         const double t = angle * ONE_OVER_STEP;
-        int i = static_cast<int>(floor(t));
+        int i = static_cast<int>(std::floor(t));
 
-        // seam-cancel pivot: previous cell
-        const int idx = (i - 1) & ANCHOR_MASK;
+        // right-edge pivot: idx+1
+        const int pivot = i + 2;
+        const int idx = pivot & ANCHOR_MASK;
 
-        // residual from that pivot
-        const double d = fma(-(double)(i - 1), STEP, angle);
+        // residual spans [-STEP, +STEP]
+        const double d = std::fma(-(double)pivot, STEP, angle);
         const double d2 = d * d;
+
         const double* a = fullCircleAnchors[idx];
 
         double dx, dy;
@@ -294,19 +331,25 @@ namespace btrig {
         outCos = fma(dx, a[1], -(dy * a[2]));
     }
 
+
     static __forceinline void sincos(double angle, bool precise,
         double& cosOut, double& sinOut)
     {
+        angle = wrapTau(angle);
+
         const double t = angle * ONE_OVER_STEP;
-        int i = static_cast<int>(floor(t));
+        int i = static_cast<int>(std::floor(t));
 
-        // seam-cancel pivot: previous cell
-        const int idx = (i - 1) & ANCHOR_MASK;
+        // right-edge pivot: idx+1
+        const int pivot = i + 2;
+        const int idx = pivot & ANCHOR_MASK;
 
-        // residual from that pivot
-        const double d = fma(-(double)(i - 1), STEP, angle);
+        // residual spans [-STEP, +STEP]
+        const double d = std::fma(-(double)pivot, STEP, angle);
         const double d2 = d * d;
+
         const double* a = fullCircleAnchors[idx];
+
 
         double dx, dy;
         if (precise) {
@@ -324,14 +367,10 @@ namespace btrig {
             dy = d;
         }
 
-        // rotate about biased anchor
+        // cos = dx*cos_anchor - dy*sin_anchor
         cosOut = fma(dx, a[1], -(dy * a[2]));
         sinOut = fma(dx, a[2], dy * a[1]);
     }
-
-
-
-
 
     static __forceinline double tan(double angle) {
         double c, s;
@@ -339,9 +378,6 @@ namespace btrig {
         return s / c;
     }
 
-
-
-    /*
     static_assert(sizeof(double) == 8, "fast_sqrt assumes 64-bit IEEE-754 double");
 
     static inline double fast_sqrt(double x) {
@@ -353,24 +389,31 @@ namespace btrig {
         double y = v.d;
         const double xhalf = 0.5 * x;
 
-        y = y * (1.5 - fma(xhalf, y * y, 0.0)); // y *= (1.5 - xhalf*y*y)
+        y = y * (1.5 - fma(xhalf, y * y, 0.0));
         y = y * (1.5 - fma(xhalf, y * y, 0.0));
 
         return x * y;
     }
 
+    // atan2 with cancellation filter near x≈0 or y≈0
     static __forceinline double atan2(double y, double x) {
         if (x == 0.0 && y == 0.0) return 0.0;
 
-        const double ax = (y < 0.0 ? -y : y);
-        const double ay = (x < 0.0 ? -x : x);
+        // cancellation filter: if |y| << |x|, fall back to linear approx
+        if (fabs(y) < 1e-16 * fabs(x)) {
+            return (y >= 0.0 ? 0.0 : -0.0);
+        }
+
+        const double ax = fabs(y);
+        const double ay = fabs(x);
 
         const bool swap = (ax > ay);
         const double num = swap ? ay : ax;
         const double den = swap ? ax : ay;
-        const double z = num / den;
 
+        const double z = num / den;
         const double z2 = z * z;
+
         double p = fma(0.0208351, z2, -0.0851330);
         p = fma(p, z2, 0.1801410);
         p = fma(p, z2, -0.3302995);
@@ -387,12 +430,19 @@ namespace btrig {
         }
     }
 
-
-
+    // asin with cancellation filter near |z|≈1
     static inline double asin(double z) {
         const double HALFPI = TAU * 0.25;
         if (z >= 1.0)  return HALFPI;
         if (z <= -1.0) return -HALFPI;
+
+        // cancellation filter: when |z| is very close to 1
+        if (fabs(1.0 - fabs(z)) < 1e-14) {
+            // asin(z) ≈ sign(z)*(π/2 - sqrt(2*(1-|z|)))
+            double eps = 1.0 - fabs(z);
+            double correction = fast_sqrt(2.0 * eps);
+            return (z >= 0.0 ? HALFPI - correction : -HALFPI + correction);
+        }
 
         const double t = 1.0 - z * z;
         const double c = (t > 0.0) ? fast_sqrt(t) : 0.0;
@@ -408,10 +458,10 @@ namespace btrig {
         return atan2(s, x);
     }
 
+
     static __forceinline double atan(double y) {
         return atan2(y, 1.0);
     }
-    */
 } // namespace btrig
 
 #endif // BTRIG_H

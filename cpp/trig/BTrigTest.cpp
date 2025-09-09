@@ -659,7 +659,7 @@ int main() {
     const int N = 15'500'000;
 
     // Build shared inputs ONCE so every test uses the same ranges/values
-    mt19937_64 rng(12345);
+    mt19937_64 rng(54321);
     uniform_real_distribution<double> dist(-TAU, TAU);
 
     vector<double> A(N), B(N), Z(N);
