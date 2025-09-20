@@ -75,12 +75,6 @@ static inline std::vector<btrig::uq64> make_random_q64(size_t N, uint64_t seed) 
     return v;
 }
 
-// Convert Q64.64 turns -> long double radians (for libm evals only)
-static inline long double q64_to_radians(btrig::uq64 q) {
-    long double frac = (long double)((long double)q * ldexpl(1.0L, -64)); // exact -> [0,1)
-    return frac * btrig::TAU;
-}
-
 // Build btrig precise reference arrays
 static inline void compute_btrig_ref(const std::vector<btrig::uq64>& phases_q,
                                      std::vector<long double>& refC,
@@ -106,29 +100,6 @@ static inline btrig::uq64 phase_index_to_q64(int i) {
     if (r * 2 >= N) ++q;
     return (btrig::uq64)q;
 }
-
-/*
-// Turns (long double) -> Q64.64 rounding
-static inline btrig::uq64 turns_to_q64_rn(long double turns) {
-    long double ip;
-    long double frac = ::modfl(turns, &ip);
-    if (frac < 0.0L) frac += 1.0L;
-    long double scaled = frac * (long double)btrig::ONE_Q64;
-    if (scaled <= 0.0L) return 0;
-    if (scaled >= (long double)btrig::ONE_Q64) return (btrig::uq64)0;
-    return (btrig::uq64)(scaled + 0.5L);
-}
-*/
-
-/*
-constexpr long double INV_DEG = 1.0L / 360.0L;
-// from_degrees: long double -> uq64
-static inline btrig::uq64 from_degrees_q64(long double deg) {
-    // 360 degrees = 1 turn
-    long double turns = deg * INV_DEG;
-    return turns_to_q64_rn(turns);
-}
-*/
 
 
 // Error accumulator vs reference arrays
