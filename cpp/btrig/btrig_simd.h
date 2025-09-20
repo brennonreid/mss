@@ -42,6 +42,7 @@
 #include <cstddef>  // alignment checks
 #include <vector>
 #include <cmath>
+#include <mutex>
 
 #include "btrig.h"
 
@@ -387,35 +388,132 @@ static inline void cos_q64_avx2(const uq64* phase_q64, int n, bool precise, doub
 static inline void sin_q64_avx2(const uq64* phase_q64, int n, bool precise, double* sinOut) {
 #if defined(__AVX2__)
     _ensure_anchorsD_init();
+
     int i = 0;
+
+    // 4-lane AVX2 main loop
     for (; i + 3 < n; i += 4) {
-        int idx2[4]; int64_t srem[4];
+        int     idx2[4];
+        int64_t srem[4];
+
+        // scalar phase split + nearest-anchor pivot per lane
         for (int k = 0; k < 4; ++k) {
-            int idx; uint64_t rem; btrig::phaseQ64_to_idx_rem(phase_q64[i+k], idx, rem);
-            uint64_t sign = rem >> 63; idx2[k] = (idx + (int)sign) & btrig::ANCHOR_MASK; srem[k]=(int64_t)rem;
+            int idx; uint64_t rem;
+            btrig::phaseQ64_to_idx_rem(phase_q64[i + k], idx, rem);
+            const uint64_t sign = rem >> 63;
+            idx2[k]  = (idx + (int)sign) & btrig::ANCHOR_MASK;
+            srem[k]  = (int64_t)rem;
         }
+
         __m256d d  = detail::load_d_from_srem4(srem);
         __m256d cA, sA; detail::gather_anchor4(idx2, cA, sA);
         __m256d dx, dy; detail::residual4(d, precise, dx, dy);
-        __m256d c; __m256d s; detail::rotate4(dx, dy, cA, sA, c, s);
-        if (is_aligned_32(&sinOut[i])) _mm256_store_pd(&sinOut[i], s); else _mm256_storeu_pd(&sinOut[i], s);
+
+        // s = dx*sA + dy*cA
+    #if defined(__FMA__)
+        __m256d s = _mm256_fmadd_pd(dx, sA, _mm256_mul_pd(dy, cA));
+    #else
+        __m256d s = _mm256_add_pd(_mm256_mul_pd(dx, sA), _mm256_mul_pd(dy, cA));
+    #endif
+
+        if (is_aligned_32(&sinOut[i])) _mm256_store_pd(&sinOut[i], s);
+        else                            _mm256_storeu_pd(&sinOut[i], s);
     }
+
+    // 2-lane SSE2 tail with AVX2 gathers
     for (; i + 1 < n; i += 2) {
-        int idx2[2]; int64_t srem[2];
+        int     idx2[2];
+        int64_t srem[2];
+
         for (int k = 0; k < 2; ++k) {
-            int idx; uint64_t rem; btrig::phaseQ64_to_idx_rem(phase_q64[i+k], idx, rem); uint64_t sign=rem>>63; idx2[k]=(idx+(int)sign)&btrig::ANCHOR_MASK; srem[k]=(int64_t)rem; }
-        const double K=(double)btrig::K_RESIDUAL; __m128d d=_mm_set_pd((double)srem[1]*K,(double)srem[0]*K); __m128d z=_mm_mul_pd(d,d);
+            int idx; uint64_t rem;
+            btrig::phaseQ64_to_idx_rem(phase_q64[i + k], idx, rem);
+            const uint64_t sign = rem >> 63;
+            idx2[k] = (idx + (int)sign) & btrig::ANCHOR_MASK;
+            srem[k] = (int64_t)rem;
+        }
+
+        const double K = (double)btrig::K_RESIDUAL;
+        __m128d d = _mm_set_pd((double)srem[1] * K, (double)srem[0] * K);
+        __m128d z = _mm_mul_pd(d, d);
+
         __m128i vi = _mm_loadu_si128(reinterpret_cast<const __m128i*>(idx2));
         __m128d cA = _mm_i32gather_pd(_anchorsCosD, vi, 8);
         __m128d sA = _mm_i32gather_pd(_anchorsSinD, vi, 8);
-        __m128d dx,dy; if (precise){ __m128d tc=_mm_set1_pd(-1.0/40320.0); tc=_mm_fmadd_pd(tc, z, _mm_set1_pd(1.0/720.0)); tc=_mm_fmadd_pd(tc, z, _mm_set1_pd(-1.0/24.0)); tc=_mm_fmadd_pd(tc, z, _mm_set1_pd(1.0/2.0)); dx=_mm_fnmadd_pd(z, tc, _mm_set1_pd(1.0)); __m128d ts=_mm_set1_pd(-1.0/5040.0); ts=_mm_fmadd_pd(ts, z, _mm_set1_pd(1.0/120.0)); ts=_mm_fmadd_pd(ts, z, _mm_set1_pd(-1.0/6.0)); ts=_mm_fmadd_pd(ts, z, _mm_set1_pd(1.0)); dy=_mm_mul_pd(d, ts);} else { __m128d tc=_mm_set1_pd(-1.0/24.0); tc=_mm_fmadd_pd(tc, z, _mm_set1_pd(1.0/2.0)); dx=_mm_fnmadd_pd(z, tc, _mm_set1_pd(1.0)); __m128d ts=_mm_set1_pd(-1.0/6.0); ts=_mm_fmadd_pd(ts, z, _mm_set1_pd(1.0)); dy=_mm_mul_pd(d, ts);} 
-        __m128d s=_mm_add_pd(_mm_mul_pd(dx,sA), _mm_mul_pd(dy,cA)); _mm_storeu_pd(&sinOut[i], s);
+
+        __m128d dx, dy;
+        if (precise) {
+        #if defined(__FMA__)
+            __m128d tc = _mm_set1_pd(-1.0/40320.0);
+            tc = _mm_fmadd_pd(tc, z, _mm_set1_pd(1.0/720.0));
+            tc = _mm_fmadd_pd(tc, z, _mm_set1_pd(-1.0/24.0));
+            tc = _mm_fmadd_pd(tc, z, _mm_set1_pd(1.0/2.0));
+            dx = _mm_fnmadd_pd(z, tc, _mm_set1_pd(1.0));
+
+            __m128d ts = _mm_set1_pd(-1.0/5040.0);
+            ts = _mm_fmadd_pd(ts, z, _mm_set1_pd(1.0/120.0));
+            ts = _mm_fmadd_pd(ts, z, _mm_set1_pd(-1.0/6.0));
+            ts = _mm_fmadd_pd(ts, z, _mm_set1_pd(1.0));
+            dy = _mm_mul_pd(d, ts);
+        #else
+            __m128d tc = _mm_set1_pd(-1.0/40320.0);
+            tc = _mm_add_pd(_mm_mul_pd(tc, z), _mm_set1_pd(1.0/720.0));
+            tc = _mm_add_pd(_mm_mul_pd(tc, z), _mm_set1_pd(-1.0/24.0));
+            tc = _mm_add_pd(tc, _mm_set1_pd(1.0/2.0));
+            dx = _mm_sub_pd(_mm_set1_pd(1.0), _mm_mul_pd(z, tc));
+
+            __m128d ts = _mm_set1_pd(-1.0/5040.0);
+            ts = _mm_add_pd(_mm_mul_pd(ts, z), _mm_set1_pd(1.0/120.0));
+            ts = _mm_add_pd(_mm_mul_pd(ts, z), _mm_set1_pd(-1.0/6.0));
+            ts = _mm_add_pd(ts, _mm_set1_pd(1.0));
+            dy = _mm_mul_pd(d, ts);
+        #endif
+        } else {
+        #if defined(__FMA__)
+            __m128d tc = _mm_set1_pd(-1.0/24.0);
+            tc = _mm_fmadd_pd(tc, z, _mm_set1_pd(1.0/2.0));
+            dx = _mm_fnmadd_pd(z, tc, _mm_set1_pd(1.0));
+
+            __m128d ts = _mm_set1_pd(-1.0/6.0);
+            ts = _mm_fmadd_pd(ts, z, _mm_set1_pd(1.0));
+            dy = _mm_mul_pd(d, ts);
+        #else
+            __m128d tc = _mm_set1_pd(-1.0/24.0);
+            tc = _mm_add_pd(_mm_mul_pd(tc, z), _mm_set1_pd(1.0/2.0));
+            dx = _mm_sub_pd(_mm_set1_pd(1.0), _mm_mul_pd(z, tc));
+
+            __m128d ts = _mm_set1_pd(-1.0/6.0);
+            ts = _mm_add_pd(_mm_mul_pd(ts, z), _mm_set1_pd(1.0));
+            dy = _mm_mul_pd(d, ts);
+        #endif
+        }
+
+        // s = dx*sA + dy*cA
+    #if defined(__FMA__)
+        __m128d s = _mm_fmadd_pd(dx, sA, _mm_mul_pd(dy, cA));
+    #else
+        __m128d s = _mm_add_pd(_mm_mul_pd(dx, sA), _mm_mul_pd(dy, cA));
+    #endif
+
+        _mm_storeu_pd(&sinOut[i], s);
     }
-    for (; i < n; ++i) { long double c,s; btrig::sincos_q64(phase_q64[i], precise, c, s); sinOut[i]=(double)s; }
+
+    // Scalar tail
+    for (; i < n; ++i) {
+        long double c, s;
+        btrig::sincos_q64(phase_q64[i], precise, c, s);
+        sinOut[i] = (double)s;
+    }
 #else
-    for (int i=0;i<n;++i){ long double c,s; btrig::sincos_q64(phase_q64[i], precise, c, s); sinOut[i]=(double)s; }
+    // No AVX2 at compile time -> scalar
+    for (int i = 0; i < n; ++i) {
+        long double c, s;
+        btrig::sincos_q64(phase_q64[i], precise, c, s);
+        sinOut[i] = (double)s;
+    }
 #endif
 }
+
 
 // -----------------------------------------------------------------------------
 // Portable dispatcher: runtime AVX2 choose; otherwise scalar
