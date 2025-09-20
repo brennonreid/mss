@@ -138,6 +138,40 @@ namespace btrig {
     #endif
     }
 
+    // Convert Q64.64 phase -> long double turns in [0,1)
+    static inline long double q64_to_turns(btrig::uq64 p) {
+    #if defined(_MSC_VER) && !defined(__clang__)
+        // MSVC path: fraction stored in 64 bits
+        const long double TWO64 = 18446744073709551616.0L; // 2^64
+        return (long double)p / TWO64;
+    #else
+        // GCC/Clang: fraction is the low 64 bits of __uint128_t
+        const __uint128_t mask = (((__uint128_t)1) << 64) - 1;
+        uint64_t frac = (uint64_t)(p & mask);
+        return (long double)frac * ldexpl(1.0L, -64);
+    #endif
+    }
+
+    // Convenience: Q64.64 -> radians
+    static inline long double q64_to_radians(btrig::uq64 p) {
+        return q64_to_turns(p) * btrig::TAU;
+    }
+
+
+    constexpr long double INV_DEG = 1.0L / 360.0L;
+
+    // Robust to very large |deg|:
+    static inline btrig::uq64 from_degrees_q64(long double deg) {
+        long double d = ::fmodl(deg, 360.0L);
+        if (d < 0.0L) d += 360.0L;           // map to [0, 360)
+        return turns_to_q64_rn(d * INV_DEG);
+    }
+
+    static inline long double to_degrees_from_q64(btrig::uq64 phase_q64) {
+        return q64_to_turns(phase_q64) * 360.0L;
+    }
+
+
     // =========================================================================
     // Helpers for anchors & polynomials
     // =========================================================================
@@ -272,7 +306,7 @@ namespace btrig {
                                     long double& dx, long double& dy) {
         const long double z = d * d;
         long double tc, ts;
-        
+
         if (precise) {
             // cos(d) = 1 - z/2! + z^2/4! - z^3/6! + z^4/8!
             tc =  -btrig::INV_40320;    // -1/8!
@@ -441,6 +475,128 @@ namespace btrig {
         long double ang = atan2_ld(y, x, precise);    // [0, pi]
         return radians_to_q64_turns(ang);
     }
+
+    #if defined(_MSC_VER) && !defined(__clang__)
+    static inline long double fast_sqrt_ld_msvc(long double x) {
+        if (!(x > 0.0L)) return (x == 0.0L) ? 0.0L : std::numeric_limits<long double>::quiet_NaN();
+        // Direct double version: two NR steps for good accuracy
+        double xd = (double)x;
+        uint64_t bits; std::memcpy(&bits, &xd, 8);
+        bits = 0x5fe6ec85e7de30daULL - (bits >> 1);
+        double y; std::memcpy(&y, &bits, 8);
+        y = y * (1.5 - 0.5 * xd * y * y);
+        y = y * (1.5 - 0.5 * xd * y * y);
+        return (long double)(xd * y);
+    }
+#endif
+
+
+    // Constants
+    constexpr long double LN2    = 0.6931471805599453094172321214581765680755L;
+    constexpr long double INV_LN2= 1.4426950408889634073599246810018921374266L;
+
+    // exp core on small |r| (r in approx [-LN2/2, LN2/2])
+    // Horner form; precise=true uses degree 10, false uses degree 6.
+    static inline long double _exp_poly(long double r, bool precise) {
+        const long double r2 = r * r;
+        if (precise) {
+            // 1 + r + r^2/2! + ... + r^10/10!
+            // Horner from highest degree for stability.
+            long double p = 1.0L/3628800.0L;     // 1/10!
+            p = p * r + 1.0L/362880.0L;          // 1/9!
+            p = p * r + 1.0L/40320.0L;           // 1/8!
+            p = p * r + 1.0L/5040.0L;            // 1/7!
+            p = p * r + 1.0L/720.0L;             // 1/6!
+            p = p * r + 1.0L/120.0L;             // 1/5!
+            p = p * r + 1.0L/24.0L;              // 1/4!
+            p = p * r + 1.0L/6.0L;               // 1/3!
+            p = p * r + 1.0L/2.0L;               // 1/2!
+            p = p * r + 1.0L;                    // 1
+            return 1.0L + r * p;
+        } else {
+            // degree-6: up through r^6/6!
+            long double p = 1.0L/720.0L;         // 1/6!
+            p = p * r + 1.0L/120.0L;             // 1/5!
+            p = p * r + 1.0L/24.0L;              // 1/4!
+            p = p * r + 1.0L/6.0L;               // 1/3!
+            p = p * r + 1.0L/2.0L;               // 1/2!
+            p = p * r + 1.0L;                    // 1
+            return 1.0L + r * p;
+        }
+    }
+
+    // exp for long double
+    static inline long double exp_ld(long double x, bool precise) {
+        if (x != x) return x;                // NaN
+        if (x > 11356.0L) return INFINITY;   // huge -> inf (safe guard)
+        if (x < -11356.0L) return 0.0L;      // tiny -> 0
+
+        // Range reduction: x = k*LN2 + r, with r small
+        long double kf = nearbyintl(x * INV_LN2); // k as long double integer value
+        long double r  = x - kf * LN2;
+
+        // Core
+        long double er = _exp_poly(r, precise);
+
+        // Scale back by 2^k
+        // k might be outside int range on some platforms; convert carefully:
+        long long k = (long long)kf;
+        return ldexpl(er, (int)k);
+    }
+
+    // log core: log(m) with m in (0, +inf)
+    // We map m to y=(m-1)/(m+1) so |y| <= ~0.1716 over m in [sqrt(0.5), sqrt(2))
+    // log(m) = 2 * atanh(y) ≈ 2 * (y + y^3/3 + y^5/5 + ...)
+    static inline long double _log_core_atanh(long double m, bool precise) {
+        // y in (-0.1716..0.1716)
+        long double y  = (m - 1.0L) / (m + 1.0L);
+        long double z  = y * y;
+
+        if (precise) {
+            // up to y^11/11
+            long double p = 1.0L/11.0L;
+            p = p * z + 1.0L/9.0L;
+            p = p * z + 1.0L/7.0L;
+            p = p * z + 1.0L/5.0L;
+            p = p * z + 1.0L/3.0L;
+            return 2.0L * (y + y * z * p);
+        } else {
+            // up to y^7/7
+            long double p = 1.0L/7.0L;
+            p = p * z + 1.0L/5.0L;
+            p = p * z + 1.0L/3.0L;
+            return 2.0L * (y + y * z * p);
+        }
+    }
+
+    // log for long double (natural log)
+    static inline long double log_ld(long double x, bool precise) {
+        if (x < 0.0L)  return NAN;
+        if (x == 0.0L) return -INFINITY;
+        if (!std::isfinite(x)) return x; // +inf or NaN
+
+        // Decompose: x = m * 2^e with m in [0.5,1)
+        int e;
+        long double m = frexpl(x, &e);
+
+        // Normalize m into [sqrt(0.5), sqrt(2)) for best core accuracy
+        // sqrt(0.5) ~= 0.70710678, sqrt(2) ~= 1.41421356
+        if (m < 0.70710678118654752440L) {
+            m *= 2.0L;
+            e -= 1;
+        }
+
+        long double core = _log_core_atanh(m, precise);
+        // Combine with exponent term: e * ln(2)
+        return core + (long double)e * LN2;
+    }
+
+    // Optional double convenience wrappers
+    static inline double exp_fast(double x)   { return (double)exp_ld((long double)x, false); }
+    static inline double exp_precise(double x){ return (double)exp_ld((long double)x, true ); }
+    static inline double log_fast(double x)   { return (double)log_ld((long double)x, false); }
+    static inline double log_precise(double x){ return (double)log_ld((long double)x, true ); }
+
 
 } // namespace btrig
 
